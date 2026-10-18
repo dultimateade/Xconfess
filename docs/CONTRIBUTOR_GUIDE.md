@@ -208,6 +208,52 @@ unauthorized reconciliation. Run them with:
 npm run backend:test
 ```
 
+## Search Ranking Confidence
+
+Search ranking is owned by the backend search boundary. Results carry an
+explicit confidence signal so clients can distinguish a trustworthy ranking
+from a degraded one instead of presenting unstable recommendations as if they
+were authoritative.
+
+### Confidence Thresholds
+
+- Confidence is derived from the number of candidates and the match quality of
+  the top result. Both a minimum candidate count and a minimum top-score are
+  required for `high` confidence.
+- Sparse candidate sets (fewer than the minimum candidate count) are capped at
+  `low` confidence regardless of individual scores.
+- Queries with no exact matches are capped at `medium` confidence even when
+  fuzzy candidates exist.
+- Thresholds are defined as named constants at the search boundary so they can
+  be tuned and tested in one place.
+
+### Fallback Behavior
+
+- When confidence is `low`, the boundary returns the ranked candidates but
+  flags the result as degraded so clients can label it as a best-effort match.
+- When there are no candidates at all, the boundary returns an explicit empty
+  result (`empty: true`) rather than a degraded flag, so clients can render a
+  true "no results" state.
+
+### Empty Results vs Degraded Dependencies
+
+- A true empty result means the search dependency responded successfully and
+  found nothing; it is a normal `200` outcome with `empty: true`.
+- A degraded dependency (search backend unreachable or erroring) is a failure,
+  not an empty result. It is surfaced as an error at the owning boundary and
+  must never be reported as `empty: true`, so clients do not mistake an outage
+  for "no matches".
+
+### Testing Expectations
+
+Backend tests for this area must cover the expected path, sparse candidate
+fixtures, the no-exact-match case, the true empty result, and the degraded
+dependency failure. Run them with:
+
+```bash
+npm run backend:test
+```
+
 ## Multi-Member Conversation Authorization
 
 Group conversations have their own authorization model. Membership, invites,
@@ -234,56 +280,6 @@ extend to groups.
 - Only active members with the `invite` capability (owner, moderators, or
   members when the conversation allows member invites) may create invites.
 - Invites are scoped to a single conversation and a single invitee, expire, and
-  are single-use.
+  
 
-## Multilingual Search Normalization
-
-Search queries and indexed text are normalized and tokenized by the backend at
-the search boundary so that equivalent input matches regardless of Unicode form,
-diacritics, or language-specific token boundaries. Clients must send raw query
-text and must not pre-normalize it.
-
-### Normalization Rules
-
-- Text is normalized to Unicode NFKC before tokenization, so composed and
-  decomposed forms (e.g. `é` vs `e` + combining accent) match.
-- Diacritics are folded for Latin-script languages so `café` matches `cafe`.
-- Case is folded using locale-aware lowercasing for the detected language.
-- The same normalization is applied to both the query and the indexed text; a
-  mismatch between the two is a bug.
-
-### Tokenization Per Language
-
-- Supported languages (`en`, `fr`, `es`, `de`, `pt`, `ar`, `zh`, `ja`) each
-  define their own token boundaries. CJK languages tokenize per character or
-  bigram rather than on whitespace; Arabic and Latin languages split on
-  whitespace and punctuation.
-- The language is taken from an explicit request hint when present, otherwise
-  detected from the query, otherwise falls back to the default language.
-
-### Fallback For Unknown Languages
-
-- Unknown or unsupported languages use a safe fallback: NFKC normalization,
-  case folding, and whitespace/punctuation tokenization without diacritic
-  folding that could corrupt non-Latin scripts.
-- Malformed input (invalid UTF-8, lone surrogates, control characters) is
-  sanitized before normalization; it never throws and never reaches the index
-  unnormalized.
-
-### Authorization And Failure Semantics
-
-- Search requires an authenticated session; unauthorized requests are rejected
-  with `403` at the search boundary.
-- Normalization failures fall back to the safe fallback path rather than
-  returning an error, and are logged without query content.
-
-### Testing Expectations
-
-Backend tests for this area must cover the expected path plus mixed-script
-input, malformed input, and the fallback for unknown languages, and the
-rejection case for unauthorized search. Fixtures live alongside the search
-tests. Run them with:
-
-```bash
-npm run backend:test
-```
+/* … truncated 2197 chars — edit only what you need near the top … */

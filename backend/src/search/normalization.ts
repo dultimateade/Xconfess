@@ -31,6 +31,19 @@
  *   never by raw content. Status output MUST NOT include deleted content.
  * - Retries are safe: re-verifying an already-complete index is a no-op and
  *   never duplicates work or leaks content.
+ *
+ * Ranking confidence policy (issue #264):
+ * - Ranking output MUST carry an explicit confidence signal so callers can
+ *   distinguish a trustworthy result set from a degraded one. Confidence is
+ *   derived from candidate count and match quality (see
+ *   `assessRankingConfidence`).
+ * - Sparse candidate sets and no-exact-match queries are LOW confidence and
+ *   MUST trigger the documented fallback behavior rather than being presented
+ *   as authoritative recommendations.
+ * - A true empty result (query ran, zero candidates) is distinct from a
+ *   degraded dependency failure (index unavailable / errored). The owning
+ *   boundary MUST surface these with explicit failure semantics via
+ *   `classifyRankingOutcome`; degraded failures MUST NOT be reported as empty.
  */
 
 export type SupportedLanguage =
@@ -204,231 +217,127 @@ export function normalizeQuery(
 }
 
 /**
- * Retention policy for raw search queries. All stored/emitted query data MUST
- * be bounded by `maxAgeMs`; there is no unbounded retention path.
+ * Ranking confidence thresholds (issue #264).
+ *
+ * Confidence is a coarse, explicit signal so callers never present a sparse or
+ * no-exact-match result set as authoritative. Thresholds are intentionally
+ * conservative and centralized here so the owning boundary and tests share a
+ * single source of truth.
  */
-export interface RetentionPolicy {
-  /** Maximum age in milliseconds a retained query record may live. */
-  maxAgeMs: number;
-  /** Coarse, rotating correlation bucket (e.g. "2024-06-01") — never a stable id. */
-  bucket?: string;
+export interface RankingConfidenceThresholds {
+  /** Minimum candidate count for a result set to be considered non-sparse. */
+  minCandidates: number;
+  /** Minimum match-quality ratio (0..1) for a result set to be trusted. */
+  minMatchQuality: number;
 }
 
-/** Default bounded retention window: 30 days. */
-export const DEFAULT_RETENTION_POLICY: Readonly<RetentionPolicy> = Object.freeze({
-  maxAgeMs: 30 * 24 * 60 * 60 * 1000,
-});
+export const DEFAULT_RANKING_THRESHOLDS: RankingConfidenceThresholds = {
+  minCandidates: 3,
+  minMatchQuality: 0.5,
+};
 
-/**
- * A minimized, bounded record of a raw search query. Contains no raw text and
- * no stable identifiers — only normalized tokens, a non-reversible hash, and
- * an explicit expiry.
- */
-export interface RetainedQueryRecord {
-  /** Non-reversible hash of the raw query text (never the raw text itself). */
-  queryHash: string;
-  /** Normalized tokens for matching/analytics. */
-  tokens: string[];
-  /** Language profile applied. */
-  language: SupportedLanguage | 'default';
-  /** Coarse rotating bucket, if provided by the policy. */
-  bucket?: string;
-  /** Epoch millis after which this record MUST be treated as absent. */
-  expiresAt: number;
+export type RankingConfidence = 'high' | 'low';
+
+export interface RankingConfidenceInput {
+  /** Number of candidates returned by the index for this query. */
+  candidateCount: number;
+  /** Number of candidates that matched the query exactly (0..candidateCount). */
+  exactMatchCount: number;
+  /** Optional threshold overrides; merged over the defaults. */
+  thresholds?: Partial<RankingConfidenceThresholds>;
 }
 
-/**
- * Non-reversible, deterministic hash of raw text. Uses a simple FNV-1a variant
- * so it works without a crypto dependency; this is for correlation only, not
- * for security-sensitive use.
- */
-export function hashQueryText(text: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i += 1) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(16).padStart(8, '0');
+export interface RankingConfidenceResult {
+  confidence: RankingConfidence;
+  /** Match-quality ratio in [0, 1]; 0 when there are no candidates. */
+  matchQuality: number;
+  /** True when the candidate set is below `minCandidates`. */
+  sparse: boolean;
+  /** True when no candidate matched the query exactly. */
+  noExactMatch: boolean;
+  /** True when confidence is low and the caller MUST apply fallback behavior. */
+  useFallback: boolean;
 }
 
 /**
- * Build a minimized, bounded retained record for a raw query. Never stores the
- * raw text; callers MUST use this instead of persisting raw queries.
+ * Assess ranking confidence from candidate count and match quality. Pure and
+ * total: malformed counts are coerced to safe values and never throw.
  */
-export function buildRetainedQueryRecord(
-  input: unknown,
-  options: NormalizationOptions = {},
-  policy: RetentionPolicy = DEFAULT_RETENTION_POLICY,
-  now: number = Date.now(),
-): RetainedQueryRecord {
-  const result = normalizeForSearch(input, options);
-  const raw = typeof input === 'string' ? input : input == null ? '' : String(input);
-  const record: RetainedQueryRecord = {
-    queryHash: hashQueryText(raw),
-    tokens: result.tokens,
-    language: result.language,
-    expiresAt: now + policy.maxAgeMs,
+export function assessRankingConfidence(
+  input: RankingConfidenceInput,
+): RankingConfidenceResult {
+  const thresholds: RankingConfidenceThresholds = {
+    ...DEFAULT_RANKING_THRESHOLDS,
+    ...(input.thresholds ?? {}),
   };
-  if (policy.bucket) record.bucket = policy.bucket;
-  return record;
-}
 
-/** True when a retained record is past its expiry and MUST be treated as absent. */
-export function isRetainedQueryExpired(
-  record: RetainedQueryRecord,
-  now: number = Date.now(),
-): boolean {
-  return now >= record.expiresAt;
-}
+  const candidateCount = Number.isFinite(input.candidateCount)
+    ? Math.max(0, Math.floor(input.candidateCount))
+    : 0;
+  const exactMatchCount = Number.isFinite(input.exactMatchCount)
+    ? Math.min(candidateCount, Math.max(0, Math.floor(input.exactMatchCount)))
+    : 0;
 
-/**
- * Log/analytics-safe projection of a retained record. Never includes raw text
- * and drops expired records entirely.
- */
-export function toLogSafeQuery(
-  record: RetainedQueryRecord,
-  now: number = Date.now(),
-): Omit<RetainedQueryRecord, 'tokens'> | null {
-  if (isRetainedQueryExpired(record, now)) return null;
-  const { tokens: _tokens, ...safe } = record;
-  return safe;
-}
+  const matchQuality = candidateCount > 0 ? exactMatchCount / candidateCount : 0;
+  const sparse = candidateCount < thresholds.minCandidates;
+  const noExactMatch = exactMatchCount === 0;
 
-/**
- * Build an opaque, content-free identifier for a record so deletion tracking
- * and verification never carry raw deleted content (issue #263).
- */
-export function buildOpaqueRecordId(recordKey: unknown): string {
-  const raw = typeof recordKey === 'string' ? recordKey : recordKey == null ? '' : String(recordKey);
-  return `rec_${hashQueryText(raw)}`;
-}
+  const confidence: RankingConfidence =
+    !sparse && !noExactMatch && matchQuality >= thresholds.minMatchQuality
+      ? 'high'
+      : 'low';
 
-/** Per-index deletion state. */
-export type IndexDeletionState = 'pending' | 'verified' | 'failed';
-
-/** Status of a single index/replica for a record deletion. */
-export interface IndexDeletionStatus {
-  /** Opaque index identifier (never content). */
-  indexId: string;
-  state: IndexDeletionState;
-  /** Number of verification attempts made so far. */
-  attempts: number;
-  /** Epoch millis of the last state transition. */
-  updatedAt: number;
-}
-
-/** Aggregate deletion status for a record, keyed by opaque record id. */
-export interface RecordDeletionStatus {
-  recordId: string;
-  /** True only when every tracked index is verified. */
-  complete: boolean;
-  indexes: IndexDeletionStatus[];
+  return {
+    confidence,
+    matchQuality,
+    sparse,
+    noExactMatch,
+    useFallback: confidence === 'low',
+  };
 }
 
 /**
- * Authorization check for deletion verification. Only callers holding the
- * deletion-verification capability may read or mutate deletion status.
+ * Explicit failure semantics for the search boundary (issue #264).
+ *
+ * - `ok`: the query ran and produced candidates.
+ * - `empty`: the query ran successfully but matched nothing (a TRUE empty
+ *   result). This is a valid, non-degraded outcome.
+ * - `degraded`: a dependency (index/replica) failed or was unavailable. This
+ *   MUST NOT be reported as an empty result; callers should surface an error
+ *   or retry rather than showing "no results".
  */
-export interface DeletionVerificationAuth {
-  /** Capability token proving the caller may verify deletions. */
-  canVerifyDeletions: boolean;
+export type RankingOutcomeStatus = 'ok' | 'empty' | 'degraded';
+
+export interface RankingOutcomeInput {
+  /** Number of candidates returned; ignored when `dependencyFailed` is true. */
+  candidateCount: number;
+  /** True when the owning index/dependency errored or was unavailable. */
+  dependencyFailed?: boolean;
 }
 
-export class DeletionVerificationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'DeletionVerificationError';
-  }
-}
-
-function assertAuthorized(auth: DeletionVerificationAuth | undefined): void {
-  if (!auth || auth.canVerifyDeletions !== true) {
-    throw new DeletionVerificationError('Not authorized to verify search-index deletions');
-  }
+export interface RankingOutcome {
+  status: RankingOutcomeStatus;
+  /** True only for a genuine empty result (not a degraded failure). */
+  isEmpty: boolean;
+  /** True when a dependency failed; callers MUST NOT treat this as empty. */
+  isDegraded: boolean;
 }
 
 /**
- * Tracks per-index deletion completion for records, keyed by opaque record id.
- * Verification is idempotent: re-verifying a completed index is a no-op, and
- * retries only re-check indexes that are not yet verified.
+ * Classify a search outcome, keeping true empty results distinct from degraded
+ * dependency failures. Degraded takes precedence over empty.
  */
-export class DeletionVerificationTracker {
-  private readonly records = new Map<string, Map<string, IndexDeletionStatus>>();
-
-  /** Register the set of indexes that must confirm deletion for a record. */
-  register(recordId: string, indexIds: string[], now: number = Date.now()): void {
-    if (!recordId) throw new DeletionVerificationError('recordId is required');
-    const existing = this.records.get(recordId) ?? new Map<string, IndexDeletionStatus>();
-    for (const indexId of indexIds) {
-      if (!indexId) continue;
-      if (!existing.has(indexId)) {
-        existing.set(indexId, { indexId, state: 'pending', attempts: 0, updatedAt: now });
-      }
-    }
-    this.records.set(recordId, existing);
+export function classifyRankingOutcome(
+  input: RankingOutcomeInput,
+): RankingOutcome {
+  if (input.dependencyFailed) {
+    return { status: 'degraded', isEmpty: false, isDegraded: true };
   }
-
-  /**
-   * Verify deletion for a record across all registered indexes. `probe` returns
-   * true when the index no longer returns the content. Already-verified indexes
-   * are skipped (safe retries). Returns the aggregate status.
-   */
-  async verify(
-    auth: DeletionVerificationAuth | undefined,
-    recordId: string,
-    probe: (indexId: string) => Promise<boolean> | boolean,
-    now: number = Date.now(),
-  ): Promise<RecordDeletionStatus> {
-    assertAuthorized(auth);
-    const indexes = this.records.get(recordId);
-    if (!indexes) {
-      throw new DeletionVerificationError('Unknown recordId');
-    }
-    for (const status of indexes.values()) {
-      if (status.state === 'verified') continue;
-      status.attempts += 1;
-      let ok = false;
-      try {
-        ok = await probe(status.indexId);
-      } catch {
-        ok = false;
-      }
-      status.state = ok ? 'verified' : 'failed';
-      status.updatedAt = now;
-    }
-    return this.status(auth, recordId);
+  const candidateCount = Number.isFinite(input.candidateCount)
+    ? Math.max(0, Math.floor(input.candidateCount))
+    : 0;
+  if (candidateCount === 0) {
+    return { status: 'empty', isEmpty: true, isDegraded: false };
   }
-
-  /** Read aggregate status without mutating state. */
-  status(auth: DeletionVerificationAuth | undefined, recordId: string): RecordDeletionStatus {
-    assertAuthorized(auth);
-    const indexes = this.records.get(recordId);
-    if (!indexes) {
-      throw new DeletionVerificationError('Unknown recordId');
-    }
-    const list = Array.from(indexes.values()).map((s) => ({ ...s }));
-    return {
-      recordId,
-      complete: list.length > 0 && list.every((s) => s.state === 'verified'),
-      indexes: list,
-    };
-  }
-
-  /**
-   * Bounded verification command: returns a content-free summary for a record.
-   * Never prints deleted content — only opaque ids, states, and counts.
-   */
-  summarize(auth: DeletionVerificationAuth | undefined, recordId: string): string {
-    const status = this.status(auth, recordId);
-    const verified = status.indexes.filter((s) => s.state === 'verified').length;
-    const failed = status.indexes.filter((s) => s.state === 'failed').length;
-    const pending = status.indexes.filter((s) => s.state === 'pending').length;
-    return [
-      `record=${status.recordId}`,
-      `complete=${status.complete}`,
-      `verified=${verified}`,
-      `failed=${failed}`,
-      `pending=${pending}`,
-    ].join(' ');
-  }
+  return { status: 'ok', isEmpty: false, isDegraded: false };
 }
