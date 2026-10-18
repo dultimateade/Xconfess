@@ -22,6 +22,15 @@
  * - Logging and analytics MUST follow the same policy: use
  *   `toLogSafeQuery` for any log/analytics emission so raw text never leaks
  *   and the same expiry applies.
+ *
+ * Deletion verification policy (issue #263):
+ * - A queued deletion event does not prove that every index/replica stopped
+ *   returning the removed content. The owning search boundary MUST track
+ *   per-index completion and verify it before reporting a record as deleted.
+ * - Verification is keyed by an opaque identifier (see `buildOpaqueRecordId`),
+ *   never by raw content. Status output MUST NOT include deleted content.
+ * - Retries are safe: re-verifying an already-complete index is a no-op and
+ *   never duplicates work or leaks content.
  */
 
 export type SupportedLanguage =
@@ -216,36 +225,35 @@ export const DEFAULT_RETENTION_POLICY: Readonly<RetentionPolicy> = Object.freeze
  * an explicit expiry.
  */
 export interface RetainedQueryRecord {
-  /** Normalized tokens (already lowercased/folded); safe for analytics. */
-  tokens: string[];
-  /** Non-reversible hash of the raw query text (hex). */
+  /** Non-reversible hash of the raw query text (never the raw text itself). */
   queryHash: string;
+  /** Normalized tokens for matching/analytics. */
+  tokens: string[];
   /** Language profile applied. */
   language: SupportedLanguage | 'default';
-  /** Epoch ms after which this record MUST be treated as absent. */
-  expiresAt: number;
-  /** Optional coarse correlation bucket; never a stable identifier. */
+  /** Coarse rotating bucket, if provided by the policy. */
   bucket?: string;
+  /** Epoch millis after which this record MUST be treated as absent. */
+  expiresAt: number;
 }
 
 /**
- * Deterministic, non-reversible 32-bit FNV-1a hash rendered as hex. This is
- * intentionally not cryptographic — it exists only to dedupe/group identical
- * queries without retaining the raw text. Do not use for security decisions.
+ * Non-reversible, deterministic hash of raw text. Uses a simple FNV-1a variant
+ * so it works without a crypto dependency; this is for correlation only, not
+ * for security-sensitive use.
  */
-function hashQuery(text: string): string {
+export function hashQueryText(text: string): string {
   let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
+  for (let i = 0; i < text.length; i += 1) {
     hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
   }
-  return (hash >>> 0).toString(16).padStart(8, '0');
+  return hash.toString(16).padStart(8, '0');
 }
 
 /**
- * Build a minimized, bounded record for a raw search query. This is the ONLY
- * sanctioned way to persist query data: raw text is hashed and discarded, and
- * an explicit `expiresAt` is attached from the retention policy.
+ * Build a minimized, bounded retained record for a raw query. Never stores the
+ * raw text; callers MUST use this instead of persisting raw queries.
  */
 export function buildRetainedQueryRecord(
   input: unknown,
@@ -255,50 +263,172 @@ export function buildRetainedQueryRecord(
 ): RetainedQueryRecord {
   const result = normalizeForSearch(input, options);
   const raw = typeof input === 'string' ? input : input == null ? '' : String(input);
-  const maxAgeMs = Number.isFinite(policy.maxAgeMs) && policy.maxAgeMs > 0
-    ? policy.maxAgeMs
-    : DEFAULT_RETENTION_POLICY.maxAgeMs;
   const record: RetainedQueryRecord = {
+    queryHash: hashQueryText(raw),
     tokens: result.tokens,
-    queryHash: hashQuery(raw),
     language: result.language,
-    expiresAt: now + maxAgeMs,
+    expiresAt: now + policy.maxAgeMs,
   };
   if (policy.bucket) record.bucket = policy.bucket;
   return record;
 }
 
-/**
- * Returns true when a retained record is still within its retention window.
- * Readers MUST call this before using a record; expired records are absent.
- */
-export function isRetainedQueryLive(
+/** True when a retained record is past its expiry and MUST be treated as absent. */
+export function isRetainedQueryExpired(
   record: RetainedQueryRecord,
   now: number = Date.now(),
 ): boolean {
-  return Number.isFinite(record.expiresAt) && record.expiresAt > now;
+  return now >= record.expiresAt;
 }
 
 /**
- * Log/analytics-safe projection of a query. Emits only the hash, token count,
- * language, and expiry — never raw text or tokens that could reconstruct intent
- * verbatim. Logging and analytics MUST use this instead of raw query strings.
+ * Log/analytics-safe projection of a retained record. Never includes raw text
+ * and drops expired records entirely.
  */
-export interface LogSafeQuery {
-  queryHash: string;
-  tokenCount: number;
-  language: SupportedLanguage | 'default';
-  expiresAt: number;
-  bucket?: string;
+export function toLogSafeQuery(
+  record: RetainedQueryRecord,
+  now: number = Date.now(),
+): Omit<RetainedQueryRecord, 'tokens'> | null {
+  if (isRetainedQueryExpired(record, now)) return null;
+  const { tokens: _tokens, ...safe } = record;
+  return safe;
 }
 
-export function toLogSafeQuery(record: RetainedQueryRecord): LogSafeQuery {
-  const safe: LogSafeQuery = {
-    queryHash: record.queryHash,
-    tokenCount: record.tokens.length,
-    language: record.language,
-    expiresAt: record.expiresAt,
-  };
-  if (record.bucket) safe.bucket = record.bucket;
-  return safe;
+/**
+ * Build an opaque, content-free identifier for a record so deletion tracking
+ * and verification never carry raw deleted content (issue #263).
+ */
+export function buildOpaqueRecordId(recordKey: unknown): string {
+  const raw = typeof recordKey === 'string' ? recordKey : recordKey == null ? '' : String(recordKey);
+  return `rec_${hashQueryText(raw)}`;
+}
+
+/** Per-index deletion state. */
+export type IndexDeletionState = 'pending' | 'verified' | 'failed';
+
+/** Status of a single index/replica for a record deletion. */
+export interface IndexDeletionStatus {
+  /** Opaque index identifier (never content). */
+  indexId: string;
+  state: IndexDeletionState;
+  /** Number of verification attempts made so far. */
+  attempts: number;
+  /** Epoch millis of the last state transition. */
+  updatedAt: number;
+}
+
+/** Aggregate deletion status for a record, keyed by opaque record id. */
+export interface RecordDeletionStatus {
+  recordId: string;
+  /** True only when every tracked index is verified. */
+  complete: boolean;
+  indexes: IndexDeletionStatus[];
+}
+
+/**
+ * Authorization check for deletion verification. Only callers holding the
+ * deletion-verification capability may read or mutate deletion status.
+ */
+export interface DeletionVerificationAuth {
+  /** Capability token proving the caller may verify deletions. */
+  canVerifyDeletions: boolean;
+}
+
+export class DeletionVerificationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'DeletionVerificationError';
+  }
+}
+
+function assertAuthorized(auth: DeletionVerificationAuth | undefined): void {
+  if (!auth || auth.canVerifyDeletions !== true) {
+    throw new DeletionVerificationError('Not authorized to verify search-index deletions');
+  }
+}
+
+/**
+ * Tracks per-index deletion completion for records, keyed by opaque record id.
+ * Verification is idempotent: re-verifying a completed index is a no-op, and
+ * retries only re-check indexes that are not yet verified.
+ */
+export class DeletionVerificationTracker {
+  private readonly records = new Map<string, Map<string, IndexDeletionStatus>>();
+
+  /** Register the set of indexes that must confirm deletion for a record. */
+  register(recordId: string, indexIds: string[], now: number = Date.now()): void {
+    if (!recordId) throw new DeletionVerificationError('recordId is required');
+    const existing = this.records.get(recordId) ?? new Map<string, IndexDeletionStatus>();
+    for (const indexId of indexIds) {
+      if (!indexId) continue;
+      if (!existing.has(indexId)) {
+        existing.set(indexId, { indexId, state: 'pending', attempts: 0, updatedAt: now });
+      }
+    }
+    this.records.set(recordId, existing);
+  }
+
+  /**
+   * Verify deletion for a record across all registered indexes. `probe` returns
+   * true when the index no longer returns the content. Already-verified indexes
+   * are skipped (safe retries). Returns the aggregate status.
+   */
+  async verify(
+    auth: DeletionVerificationAuth | undefined,
+    recordId: string,
+    probe: (indexId: string) => Promise<boolean> | boolean,
+    now: number = Date.now(),
+  ): Promise<RecordDeletionStatus> {
+    assertAuthorized(auth);
+    const indexes = this.records.get(recordId);
+    if (!indexes) {
+      throw new DeletionVerificationError('Unknown recordId');
+    }
+    for (const status of indexes.values()) {
+      if (status.state === 'verified') continue;
+      status.attempts += 1;
+      let ok = false;
+      try {
+        ok = await probe(status.indexId);
+      } catch {
+        ok = false;
+      }
+      status.state = ok ? 'verified' : 'failed';
+      status.updatedAt = now;
+    }
+    return this.status(auth, recordId);
+  }
+
+  /** Read aggregate status without mutating state. */
+  status(auth: DeletionVerificationAuth | undefined, recordId: string): RecordDeletionStatus {
+    assertAuthorized(auth);
+    const indexes = this.records.get(recordId);
+    if (!indexes) {
+      throw new DeletionVerificationError('Unknown recordId');
+    }
+    const list = Array.from(indexes.values()).map((s) => ({ ...s }));
+    return {
+      recordId,
+      complete: list.length > 0 && list.every((s) => s.state === 'verified'),
+      indexes: list,
+    };
+  }
+
+  /**
+   * Bounded verification command: returns a content-free summary for a record.
+   * Never prints deleted content — only opaque ids, states, and counts.
+   */
+  summarize(auth: DeletionVerificationAuth | undefined, recordId: string): string {
+    const status = this.status(auth, recordId);
+    const verified = status.indexes.filter((s) => s.state === 'verified').length;
+    const failed = status.indexes.filter((s) => s.state === 'failed').length;
+    const pending = status.indexes.filter((s) => s.state === 'pending').length;
+    return [
+      `record=${status.recordId}`,
+      `complete=${status.complete}`,
+      `verified=${verified}`,
+      `failed=${failed}`,
+      `pending=${pending}`,
+    ].join(' ');
+  }
 }
