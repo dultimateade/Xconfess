@@ -7,6 +7,21 @@
  * - Apply language-specific token boundaries (e.g. CJK, Thai) while keeping
  *   safe fallbacks for unknown languages.
  * - Never throw on malformed input; degrade to a conservative fallback.
+ *
+ * Retention & access policy for raw search queries (issue #262):
+ * - Raw query text is sensitive intent data. It MUST NOT be persisted in
+ *   plaintext alongside identifiers. Callers that need to store a query for
+ *   analytics or debugging MUST use `buildRetainedQueryRecord`, which stores
+ *   only the normalized tokens plus a non-reversible hash of the raw text.
+ * - Identifiers are minimized: no user id, profile id, IP, or session id is
+ *   attached here. If correlation is required, use a coarse, rotating bucket
+ *   (see `RetentionPolicy.bucket`) rather than a stable identifier.
+ * - Retention is bounded: every retained record carries an `expiresAt` derived
+ *   from `DEFAULT_RETENTION_POLICY.maxAgeMs`. Records past expiry MUST be
+ *   treated as absent by readers and purged by the owning store.
+ * - Logging and analytics MUST follow the same policy: use
+ *   `toLogSafeQuery` for any log/analytics emission so raw text never leaks
+ *   and the same expiry applies.
  */
 
 export type SupportedLanguage =
@@ -177,4 +192,113 @@ export function normalizeQuery(
   options: NormalizationOptions = {},
 ): string[] {
   return normalizeForSearch(input, options).tokens;
+}
+
+/**
+ * Retention policy for raw search queries. All stored/emitted query data MUST
+ * be bounded by `maxAgeMs`; there is no unbounded retention path.
+ */
+export interface RetentionPolicy {
+  /** Maximum age in milliseconds a retained query record may live. */
+  maxAgeMs: number;
+  /** Coarse, rotating correlation bucket (e.g. "2024-06-01") — never a stable id. */
+  bucket?: string;
+}
+
+/** Default bounded retention window: 30 days. */
+export const DEFAULT_RETENTION_POLICY: Readonly<RetentionPolicy> = Object.freeze({
+  maxAgeMs: 30 * 24 * 60 * 60 * 1000,
+});
+
+/**
+ * A minimized, bounded record of a raw search query. Contains no raw text and
+ * no stable identifiers — only normalized tokens, a non-reversible hash, and
+ * an explicit expiry.
+ */
+export interface RetainedQueryRecord {
+  /** Normalized tokens (already lowercased/folded); safe for analytics. */
+  tokens: string[];
+  /** Non-reversible hash of the raw query text (hex). */
+  queryHash: string;
+  /** Language profile applied. */
+  language: SupportedLanguage | 'default';
+  /** Epoch ms after which this record MUST be treated as absent. */
+  expiresAt: number;
+  /** Optional coarse correlation bucket; never a stable identifier. */
+  bucket?: string;
+}
+
+/**
+ * Deterministic, non-reversible 32-bit FNV-1a hash rendered as hex. This is
+ * intentionally not cryptographic — it exists only to dedupe/group identical
+ * queries without retaining the raw text. Do not use for security decisions.
+ */
+function hashQuery(text: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    hash ^= text.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
+}
+
+/**
+ * Build a minimized, bounded record for a raw search query. This is the ONLY
+ * sanctioned way to persist query data: raw text is hashed and discarded, and
+ * an explicit `expiresAt` is attached from the retention policy.
+ */
+export function buildRetainedQueryRecord(
+  input: unknown,
+  options: NormalizationOptions = {},
+  policy: RetentionPolicy = DEFAULT_RETENTION_POLICY,
+  now: number = Date.now(),
+): RetainedQueryRecord {
+  const result = normalizeForSearch(input, options);
+  const raw = typeof input === 'string' ? input : input == null ? '' : String(input);
+  const maxAgeMs = Number.isFinite(policy.maxAgeMs) && policy.maxAgeMs > 0
+    ? policy.maxAgeMs
+    : DEFAULT_RETENTION_POLICY.maxAgeMs;
+  const record: RetainedQueryRecord = {
+    tokens: result.tokens,
+    queryHash: hashQuery(raw),
+    language: result.language,
+    expiresAt: now + maxAgeMs,
+  };
+  if (policy.bucket) record.bucket = policy.bucket;
+  return record;
+}
+
+/**
+ * Returns true when a retained record is still within its retention window.
+ * Readers MUST call this before using a record; expired records are absent.
+ */
+export function isRetainedQueryLive(
+  record: RetainedQueryRecord,
+  now: number = Date.now(),
+): boolean {
+  return Number.isFinite(record.expiresAt) && record.expiresAt > now;
+}
+
+/**
+ * Log/analytics-safe projection of a query. Emits only the hash, token count,
+ * language, and expiry — never raw text or tokens that could reconstruct intent
+ * verbatim. Logging and analytics MUST use this instead of raw query strings.
+ */
+export interface LogSafeQuery {
+  queryHash: string;
+  tokenCount: number;
+  language: SupportedLanguage | 'default';
+  expiresAt: number;
+  bucket?: string;
+}
+
+export function toLogSafeQuery(record: RetainedQueryRecord): LogSafeQuery {
+  const safe: LogSafeQuery = {
+    queryHash: record.queryHash,
+    tokenCount: record.tokens.length,
+    language: record.language,
+    expiresAt: record.expiresAt,
+  };
+  if (record.bucket) safe.bucket = record.bucket;
+  return safe;
 }
