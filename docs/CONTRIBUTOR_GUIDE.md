@@ -376,3 +376,36 @@ When users edit confession drafts across multiple browser tabs:
   3. *Save as separate draft*: Store the local content as a new draft, preserving both versions.
   4. *Dismiss*: Dismiss the notice without altering editor state.
 
+## Feed Layout Stability and Media Geometry Reservation (#222)
+
+To prevent Cumulative Layout Shift (CLS) and keep feed items stable while users read or navigate via keyboard:
+- **Geometry Reservation**: Avatars reserve explicit 44x44px dimensions (`data-testid="avatar-geometry-box"`), and media elements reserve pre-calculated aspect-ratio boxes (`data-testid="media-geometry-box"`). Image load errors fail gracefully to initial placeholders without dimension collapse.
+- **Matching Skeletons**: `SkeletonCard` mirrors the exact layout geometry and bounding height (~300px) of hydrated confession cards, eliminating variable-height placeholder jumps during data fetching.
+- **Scroll & Focus Preservation**: `useScrollRestoration` and `usePaginationScrollAnchor` preserve vertical scroll coordinates across hydration and cursor pagination, stabilizing mixed content across 375px (mobile) and 1280px (desktop) viewports.
+
+## Browser Zoom and Enlarged Text WCAG Reflow Support (#223)
+
+To ensure full accessibility for users with low vision using browser zoom or enlarged text:
+- **WCAG Reflow Compliance**: Key workflows (composer and admin moderation queues) support 200% and 400% zoom (down to 320px CSS viewport width) without two-dimensional horizontal scrolling or control clipping.
+- **Fluid Composer Controls**: `FormattingToolbar` uses `flex-wrap` and responsive popovers (`max-w-[min(18rem,calc(100vw-3rem))]`); `EnhancedConfessionForm` adapts action button layouts to wrap cleanly on narrow viewports.
+- **Responsive Admin Queues**: `ReportList` filters use responsive CSS grid layouts (`sm:grid-cols-2 lg:grid-cols-4`) with an adaptive dual view (table for wide screens, stacked cards for 200%/400% zoom).
+
+## Unified Privacy Controls View with Effective-State Feedback (#224)
+
+Settings view located at `/settings/privacy` organizes privacy settings into transparent, data-flow-driven sections:
+- **Categorization by Data Flow**: Grouped into *Identity & Discovery*, *Content & Interaction*, *Analytics & Service Telemetry*, and *Notification Delivery*.
+- **Effective State vs Pending Diffs**: An *Effective Privacy Posture* banner highlights the current saved configuration alongside live pending change diffs, providing immediate clarity before saving.
+- **Behavioral Linking & Discard**: Each control explicitly links to its affected product surface (e.g. `/search`, `/confessions`, `/analytics`, `/settings/notifications`) and includes a *Discard Changes* action to revert uncommitted edits.
+
+## Cross-Surface Block and Mute Preferences Enforcement (#225)
+
+To prevent blocked or muted accounts from leaking across product surfaces:
+- **Precedence Hierarchy**: Strict `Block > Mute > Allow` relationship precedence.
+- **Cross-Surface Enforcement**:
+  - *Public Feed*: Excludes confessions authored by blocked or muted accounts.
+  - *Search & Recommendations*: Filters out confessions and personalized recommendations from blocked or muted accounts.
+  - *Notifications*: Background processor and enqueueing services skip delivery with failure semantics (`actor_blocked` or `actor_muted`).
+  - *Navigation Targets (Profiles)*: Blocked profiles return `403 Forbidden` (`"This profile is unavailable because of account blocking preferences."`); muted profiles return `isMuted: true` allowing unmuting without access denial.
+- **Stale Client State Prevention**: Backend invalidates cache keys upon preference mutations, and frontend `useBlockMute` hook synchronizes state reactively via cross-tab storage events and custom event bus (`xconfess:block-mute-changed`).
+
+

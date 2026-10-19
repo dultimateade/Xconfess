@@ -37,6 +37,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import { AnonymousUserService } from '../user/anonymous-user.service';
 import { EntityManager, Repository } from 'typeorm';
 import { AnonymousUser } from '../user/entities/anonymous-user.entity';
+import { User } from '../user/entities/user.entity';
 import { AnonymousConfession } from './entities/confession.entity';
 import { AppLogger } from '../logger/logger.service';
 import { maskUserId } from '../utils/mask-user-id';
@@ -358,7 +359,7 @@ export class ConfessionService {
     }
   }
 
-  async getConfessions(dto: GetConfessionsDto) {
+  async getConfessions(dto: GetConfessionsDto, requestingUserId?: number) {
     const limit = dto.limit ?? 10;
     const sort = dto.sort || SortOrder.NEWEST;
 
@@ -367,6 +368,24 @@ export class ConfessionService {
       dto.cursor,
     );
 
+    let blockedUserIds: number[] = [];
+    let mutedUserIds: number[] = [];
+    if (requestingUserId) {
+      try {
+        const requestingUser = await this.confessionRepo.manager
+          .getRepository(User)
+          .findOne({ where: { id: requestingUserId } });
+        if (requestingUser) {
+          blockedUserIds = requestingUser.getBlockedUserIds();
+          mutedUserIds = requestingUser.getMutedUserIds();
+        }
+      } catch (e) {
+        // Fallback gracefully
+      }
+    }
+
+    const excludedUserIds = Array.from(new Set([...blockedUserIds, ...mutedUserIds]));
+
     const cacheKey = this.cacheService.buildKey(
       'confessions',
       dto.cursor || 'no-cursor',
@@ -374,6 +393,7 @@ export class ConfessionService {
       limit,
       dto.gender || 'all',
       dto.sort || 'recent',
+      requestingUserId ? `user:${requestingUserId}` : 'anon',
     );
 
     const cached = await this.cacheService.get<any>(cacheKey);
@@ -413,8 +433,19 @@ export class ConfessionService {
               "linked_user.privacy_settings->>'isDiscoverable' IS DISTINCT FROM 'false'",
             );
         }),
-      )
-      .leftJoinAndSelect('confession.reactions', 'reactions')
+      );
+
+    if (excludedUserIds.length > 0) {
+      qb.andWhere(
+        new Brackets((sub) => {
+          sub
+            .where('userLinks.id IS NULL')
+            .orWhere('linked_user.id NOT IN (:...excludedUserIds)', { excludedUserIds });
+        }),
+      );
+    }
+
+    qb.leftJoinAndSelect('confession.reactions', 'reactions')
       .select([
         'confession.id',
         'confession.message',

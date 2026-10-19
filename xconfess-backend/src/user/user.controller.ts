@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Post,
   Patch,
   Delete,
   Param,
@@ -22,9 +23,48 @@ import { UpdatePersonalizationDto } from './dto/update-personalization.dto';
 export class UserController {
   constructor(private readonly userService: UserService) {}
 
+  /** Get authenticated user's block/mute preferences */
+  @Get('me/blocks-mutes')
+  async getBlockMutePreferences(@Req() req: any) {
+    const userId = Number(req.user?.id ?? req.user?.sub);
+    return this.userService.getBlockMutePreferences(userId);
+  }
+
+  /** Block a user */
+  @Post(':targetUserId/block')
+  async blockUser(@Param('targetUserId') targetUserId: string, @Req() req: any) {
+    const userId = Number(req.user?.id ?? req.user?.sub);
+    return this.userService.blockUser(userId, parseInt(targetUserId, 10));
+  }
+
+  /** Unblock a user */
+  @Delete(':targetUserId/block')
+  async unblockUser(@Param('targetUserId') targetUserId: string, @Req() req: any) {
+    const userId = Number(req.user?.id ?? req.user?.sub);
+    return this.userService.unblockUser(userId, parseInt(targetUserId, 10));
+  }
+
+  /** Mute a user */
+  @Post(':targetUserId/mute')
+  async muteUser(@Param('targetUserId') targetUserId: string, @Req() req: any) {
+    const userId = Number(req.user?.id ?? req.user?.sub);
+    return this.userService.muteUser(userId, parseInt(targetUserId, 10));
+  }
+
+  /** Unmute a user */
+  @Delete(':targetUserId/mute')
+  async unmuteUser(@Param('targetUserId') targetUserId: string, @Req() req: any) {
+    const userId = Number(req.user?.id ?? req.user?.sub);
+    return this.userService.unmuteUser(userId, parseInt(targetUserId, 10));
+  }
+
   /** Public profile — no ownership required */
   @Get([':userId/profile', ':userId/public-profile'])
-  async getPublicProfile(@Param('userId') userId: string) {
+  async getPublicProfile(@Param('userId') userId: string, @Req() req?: any) {
+    const requestingUserId = req?.user?.id ?? req?.user?.sub;
+    if (requestingUserId !== undefined && requestingUserId !== null) {
+      return this.userService.getPublicProfile(userId, Number(requestingUserId));
+    }
     return this.userService.getPublicProfile(userId);
   }
 
