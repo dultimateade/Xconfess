@@ -165,6 +165,7 @@ export class ConfessionController {
   }
 
   @Get()
+  @UseGuards(OptionalJwtAuthGuard)
   @ApiOperation({ summary: 'Get paginated confessions list' })
   @ApiResponse({
     status: 200,
@@ -187,7 +188,11 @@ export class ConfessionController {
     },
   })
   @UsePipes(new ValidationPipe({ transform: true, whitelist: true }))
-  findAll(@Query() dto: GetConfessionsDto) {
+  findAll(@Query() dto: GetConfessionsDto, @Req() req?: any) {
+    const requestingUserId = req?.user?.id ?? req?.user?.sub;
+    if (requestingUserId !== undefined && requestingUserId !== null) {
+      return this.service.getConfessions(dto, Number(requestingUserId));
+    }
     return this.service.getConfessions(dto);
   }
 

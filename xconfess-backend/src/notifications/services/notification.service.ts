@@ -65,6 +65,72 @@ export class NotificationService {
     }
 
     const userId = payload?.userId || payload?.recipientId;
+    const actorId =
+      payload?.actorId ||
+      payload?.senderId ||
+      payload?.initiatorId ||
+      payload?.metadata?.actorId ||
+      payload?.metadata?.senderId;
+
+    if (userId && actorId) {
+      const recipientNum = parseInt(String(userId), 10);
+      const actorNum = parseInt(String(actorId), 10);
+
+      if (!isNaN(recipientNum) && !isNaN(actorNum) && recipientNum !== actorNum) {
+        try {
+          const recipient = await this.userRepository.findOne({ where: { id: recipientNum } });
+          const actor = await this.userRepository.findOne({ where: { id: actorNum } });
+
+          // Precedence: Block > Mute > Allow
+          const isBlocked =
+            Boolean(recipient?.isUserBlocked(actorNum)) ||
+            Boolean(actor?.isUserBlocked(recipientNum));
+
+          if (isBlocked) {
+            this.appLogger.warn(
+              `enqueueNotification skipped (actor blocked): type=${type} recipient=${recipientNum} actor=${actorNum}`,
+              'NotificationService',
+            );
+            this.appLogger.incrementCounter('notification_delivery_skipped_total', 1, {
+              queue: NOTIFICATION_QUEUE,
+              notificationType: type,
+              reason: 'actor_blocked',
+            });
+            return {
+              state: NotificationDeliveryState.SKIPPED,
+              reason: 'actor_blocked',
+              queue: NOTIFICATION_QUEUE,
+              jobId,
+            };
+          }
+
+          const isMuted = Boolean(recipient?.isUserMuted(actorNum));
+          if (isMuted) {
+            this.appLogger.warn(
+              `enqueueNotification skipped (actor muted): type=${type} recipient=${recipientNum} actor=${actorNum}`,
+              'NotificationService',
+            );
+            this.appLogger.incrementCounter('notification_delivery_skipped_total', 1, {
+              queue: NOTIFICATION_QUEUE,
+              notificationType: type,
+              reason: 'actor_muted',
+            });
+            return {
+              state: NotificationDeliveryState.SKIPPED,
+              reason: 'actor_muted',
+              queue: NOTIFICATION_QUEUE,
+              jobId,
+            };
+          }
+        } catch (err) {
+          this.appLogger.warn(
+            `Failed to evaluate block/mute precedence in enqueueNotification: ${err}`,
+            'NotificationService',
+          );
+        }
+      }
+    }
+
     if (userId) {
       const canDeliver = await this.shouldDeliverEmail(userId, type);
       if (!canDeliver) {
@@ -172,6 +238,27 @@ export class NotificationService {
   async createNotification(
     dto: CreateNotificationDto,
   ): Promise<Notification | null> {
+    const actorId = dto.metadata?.actorId || dto.metadata?.senderId;
+    if (dto.userId && actorId) {
+      const recipientNum = parseInt(String(dto.userId), 10);
+      const actorNum = parseInt(String(actorId), 10);
+      if (!isNaN(recipientNum) && !isNaN(actorNum) && recipientNum !== actorNum) {
+        try {
+          const recipient = await this.userRepository.findOne({ where: { id: recipientNum } });
+          const actor = await this.userRepository.findOne({ where: { id: actorNum } });
+          if (
+            recipient?.isUserBlocked(actorNum) ||
+            actor?.isUserBlocked(recipientNum) ||
+            recipient?.isUserMuted(actorNum)
+          ) {
+            return null;
+          }
+        } catch {
+          // Gracefully continue
+        }
+      }
+    }
+
     const preference = await this.getUserPreference(dto.userId);
 
     // Check if user wants this type of notification (NotificationPreference table)
