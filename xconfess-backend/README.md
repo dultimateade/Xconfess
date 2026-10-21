@@ -71,6 +71,23 @@ Concurrent transaction workers serialize sequence allocation per Stellar account
 - **Failure semantics**: if a lease cannot be acquired within the wait budget the submit is rejected with a retryable error rather than reusing a stale sequence.
 - **Tests**: `npm run backend:test && npm run contract:test:integration` cover multi-worker concurrency and recovery after process failure.
 
+## Language-aware moderation evaluation
+
+Admins can run the synthetic multilingual evaluation with `POST /api/admin/moderation/language-evaluation`. The route requires a valid JWT and the admin role. Its optional `languages`, `categories`, and `disparityThreshold` filters select a subset of supported evaluation data; omitted filters use the full corpus.
+
+- **Privacy**: the built-in corpus contains synthetic text only, with positive and negative samples for every supported language and moderation category. The response contains aggregate confusion-matrix metrics, including false-positive and false-negative rates by language and language/category pair; it does not include sample text or persist it.
+- **Provider use**: evaluation submits only the built-in synthetic samples through the configured moderation service. A run may issue one moderation request per selected sample and follows the moderation service's existing provider/fallback behavior.
+- **Failure behavior**: unsupported filters or filters with no matching samples return `400`. A thrown moderation error fails the request and does not cache a partial report.
+- **Configuration**: no additional environment variables are required. The disparity threshold defaults to `0.15` and can be set between `0` and `1`.
+
+## Moderation policy impact preview and rollout
+
+An admin can preview threshold changes with `POST /api/admin/moderation/policy-impact-preview`, sending `highThreshold` and `mediumThreshold` values. The preview compares current and proposed decisions against the checked-in synthetic moderation corpus and returns aggregate decision-transition counts only. It uses the local rule-based scorer; it does not call moderation providers, read existing user content, or persist fixture text. Thresholds must satisfy `0 < mediumThreshold < highThreshold <= 1`.
+
+Applying a change uses `POST /api/admin/moderation/config/thresholds` with the same thresholds, the returned `previewId`, and `"approved": true`. The admin JWT and role guard protects both endpoints. The preview ID is one-time, expires after 10 minutes, and is invalidated if another preview is created or the active thresholds change. A missing, expired, stale, or mismatched preview fails rather than applying the proposal.
+
+Approved thresholds take effect in memory for the current backend process. `MODERATION_HIGH_THRESHOLD` and `MODERATION_MEDIUM_THRESHOLD` remain the startup baseline, so a process restart restores the configured values. In multi-instance deployments, route preview and approval to the same instance; otherwise approval fails closed if that instance has no matching preview.
+
 <p align="center">
   <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
 </p>
@@ -217,7 +234,16 @@ npm run migration:revert
 
 When running locally, Swagger docs are available at `/api/api-docs`.
 
-For route inventory, DTO examples, and the **`GET /api/health`** contract (including schema readiness for `anonymous_confessions`), see [API_DOCUMENTATION.md](./API_DOCUMENTATION.md).
+## Cross-Domain Integrity Checks
+
+The backend provides a read-only cross-domain integrity verification report accessible to administrators via `GET /api/admin/integrity/report`.
+It executes bounded, read-only queries across identity, content, export, and moderation domains, returning stable error codes (`ERR_INTEGRITY_*`), severity levels, and automated repair guidance for detected invariant violations.
+
+Configuration environment variables:
+- `INTEGRITY_CHECK_DEFAULT_TIMEOUT_MS`: Default timeout budget per report run (default: 5000).
+- `INTEGRITY_CHECK_MAX_TIMEOUT_MS`: Maximum timeout budget allowable (default: 30000).
+- `INTEGRITY_CHECK_DEFAULT_LIMIT`: Default sample limit per invariant check (default: 50).
+- `INTEGRITY_CHECK_MAX_LIMIT`: Maximum violation sample limit (default: 200).
 
 ## 📄 License
 

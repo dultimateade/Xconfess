@@ -8,42 +8,13 @@
  *   safe fallbacks for unknown languages.
  * - Never throw on malformed input; degrade to a conservative fallback.
  *
- * Retention & access policy for raw search queries (issue #262):
- * - Raw query text is sensitive intent data. It MUST NOT be persisted in
- *   plaintext alongside identifiers. Callers that need to store a query for
- *   analytics or debugging MUST use `buildRetainedQueryRecord`, which stores
- *   only the normalized tokens plus a non-reversible hash of the raw text.
- * - Identifiers are minimized: no user id, profile id, IP, or session id is
- *   attached here. If correlation is required, use a coarse, rotating bucket
- *   (see `RetentionPolicy.bucket`) rather than a stable identifier.
- * - Retention is bounded: every retained record carries an `expiresAt` derived
- *   from `DEFAULT_RETENTION_POLICY.maxAgeMs`. Records past expiry MUST be
- *   treated as absent by readers and purged by the owning store.
- * - Logging and analytics MUST follow the same policy: use
- *   `toLogSafeQuery` for any log/analytics emission so raw text never leaks
- *   and the same expiry applies.
- *
- * Deletion verification policy (issue #263):
- * - A queued deletion event does not prove that every index/replica stopped
- *   returning the removed content. The owning search boundary MUST track
- *   per-index completion and verify it before reporting a record as deleted.
- * - Verification is keyed by an opaque identifier (see `buildOpaqueRecordId`),
- *   never by raw content. Status output MUST NOT include deleted content.
- * - Retries are safe: re-verifying an already-complete index is a no-op and
- *   never duplicates work or leaks content.
- *
- * Ranking confidence policy (issue #264):
- * - Ranking output MUST carry an explicit confidence signal so callers can
- *   distinguish a trustworthy result set from a degraded one. Confidence is
- *   derived from candidate count and match quality (see
- *   `assessRankingConfidence`).
- * - Sparse candidate sets and no-exact-match queries are LOW confidence and
- *   MUST trigger the documented fallback behavior rather than being presented
- *   as authoritative recommendations.
- * - A true empty result (query ran, zero candidates) is distinct from a
- *   degraded dependency failure (index unavailable / errored). The owning
- *   boundary MUST surface these with explicit failure semantics via
- *   `classifyRankingOutcome`; degraded failures MUST NOT be reported as empty.
+ * Advanced query grammar (allowlisted):
+ * - Free terms: `foo bar`
+ * - Field-scoped terms: `field:value` where `field` is in ALLOWED_FIELDS.
+ * - Quoted phrases: `"exact phrase"` (optionally field-scoped: `title:"a b"`).
+ * - Negation prefix: `-term` / `-field:value` / `-"phrase"`.
+ * Anything else (unknown operators, unbalanced quotes, unknown fields,
+ * excessive complexity) is rejected with a stable error code.
  */
 
 export type SupportedLanguage =
@@ -216,128 +187,211 @@ export function normalizeQuery(
   return normalizeForSearch(input, options).tokens;
 }
 
+// ---------------------------------------------------------------------------
+// Advanced query grammar
+// ---------------------------------------------------------------------------
+
+/** Fields that may be used as `field:value` scopes in advanced queries. */
+export const ALLOWED_FIELDS = [
+  'title',
+  'body',
+  'author',
+  'tag',
+  'category',
+  'language',
+] as const;
+
+export type AllowedField = (typeof ALLOWED_FIELDS)[number];
+
+/** Stable, documented validation error codes for advanced query parsing. */
+export type QueryValidationErrorCode =
+  | 'EMPTY_QUERY'
+  | 'UNKNOWN_FIELD'
+  | 'UNBALANCED_QUOTES'
+  | 'UNSUPPORTED_OPERATOR'
+  | 'TOO_MANY_CLAUSES'
+  | 'TOO_MANY_TOKENS'
+  | 'CLAUSE_TOO_LONG';
+
+export interface QueryValidationError {
+  code: QueryValidationErrorCode;
+  message: string;
+  /** Character offset in the original query where the problem was detected. */
+  position?: number;
+}
+
+export interface QueryClause {
+  /** Field scope, or null for a free-text clause. */
+  field: AllowedField | null;
+  /** True when the clause is negated with a leading `-`. */
+  negated: boolean;
+  /** True when the clause originated from a quoted phrase. */
+  phrase: boolean;
+  /** Normalized tokens for the clause. */
+  tokens: string[];
+}
+
+export interface ParsedQuery {
+  ok: true;
+  clauses: QueryClause[];
+}
+
+export interface QueryParseFailure {
+  ok: false;
+  error: QueryValidationError;
+}
+
+export type QueryParseResult = ParsedQuery | QueryParseFailure;
+
+/** Complexity caps to prevent unexpectedly expensive queries. */
+export const QUERY_LIMITS = {
+  /** Maximum number of clauses (terms/phrases) in a single query. */
+  maxClauses: 32,
+  /** Maximum number of normalized tokens across the whole query. */
+  maxTokens: 128,
+  /** Maximum length (in characters) of a single clause value. */
+  maxClauseLength: 256,
+} as const;
+
+const FIELD_SET: ReadonlySet<string> = new Set(ALLOWED_FIELDS);
+
+// Characters that look like operators but are not part of the allowlisted
+// grammar. Rejecting them keeps behavior predictable and avoids expensive
+// wildcard/regex-style queries.
+const UNSUPPORTED_OPERATOR_PATTERN = /[~^*?()[\]{}|\\]/;
+
+function fail(
+  code: QueryValidationErrorCode,
+  message: string,
+  position?: number,
+): QueryParseFailure {
+  return { ok: false, error: { code, message, position } };
+}
+
 /**
- * Ranking confidence thresholds (issue #264).
+ * Parse an advanced search query against the documented allowlisted grammar.
  *
- * Confidence is a coarse, explicit signal so callers never present a sparse or
- * no-exact-match result set as authoritative. Thresholds are intentionally
- * conservative and centralized here so the owning boundary and tests share a
- * single source of truth.
- */
-export interface RankingConfidenceThresholds {
-  /** Minimum candidate count for a result set to be considered non-sparse. */
-  minCandidates: number;
-  /** Minimum match-quality ratio (0..1) for a result set to be trusted. */
-  minMatchQuality: number;
-}
-
-export const DEFAULT_RANKING_THRESHOLDS: RankingConfidenceThresholds = {
-  minCandidates: 3,
-  minMatchQuality: 0.5,
-};
-
-export type RankingConfidence = 'high' | 'low';
-
-export interface RankingConfidenceInput {
-  /** Number of candidates returned by the index for this query. */
-  candidateCount: number;
-  /** Number of candidates that matched the query exactly (0..candidateCount). */
-  exactMatchCount: number;
-  /** Optional threshold overrides; merged over the defaults. */
-  thresholds?: Partial<RankingConfidenceThresholds>;
-}
-
-export interface RankingConfidenceResult {
-  confidence: RankingConfidence;
-  /** Match-quality ratio in [0, 1]; 0 when there are no candidates. */
-  matchQuality: number;
-  /** True when the candidate set is below `minCandidates`. */
-  sparse: boolean;
-  /** True when no candidate matched the query exactly. */
-  noExactMatch: boolean;
-  /** True when confidence is low and the caller MUST apply fallback behavior. */
-  useFallback: boolean;
-}
-
-/**
- * Assess ranking confidence from candidate count and match quality. Pure and
- * total: malformed counts are coerced to safe values and never throw.
- */
-export function assessRankingConfidence(
-  input: RankingConfidenceInput,
-): RankingConfidenceResult {
-  const thresholds: RankingConfidenceThresholds = {
-    ...DEFAULT_RANKING_THRESHOLDS,
-    ...(input.thresholds ?? {}),
-  };
-
-  const candidateCount = Number.isFinite(input.candidateCount)
-    ? Math.max(0, Math.floor(input.candidateCount))
-    : 0;
-  const exactMatchCount = Number.isFinite(input.exactMatchCount)
-    ? Math.min(candidateCount, Math.max(0, Math.floor(input.exactMatchCount)))
-    : 0;
-
-  const matchQuality = candidateCount > 0 ? exactMatchCount / candidateCount : 0;
-  const sparse = candidateCount < thresholds.minCandidates;
-  const noExactMatch = exactMatchCount === 0;
-
-  const confidence: RankingConfidence =
-    !sparse && !noExactMatch && matchQuality >= thresholds.minMatchQuality
-      ? 'high'
-      : 'low';
-
-  return {
-    confidence,
-    matchQuality,
-    sparse,
-    noExactMatch,
-    useFallback: confidence === 'low',
-  };
-}
-
-/**
- * Explicit failure semantics for the search boundary (issue #264).
+ * Grammar (informal):
+ *   query   := clause*
+ *   clause  := '-'? ( field ':' )? value
+ *   value   := word | '"' phrase '"'
  *
- * - `ok`: the query ran and produced candidates.
- * - `empty`: the query ran successfully but matched nothing (a TRUE empty
- *   result). This is a valid, non-degraded outcome.
- * - `degraded`: a dependency (index/replica) failed or was unavailable. This
- *   MUST NOT be reported as an empty result; callers should surface an error
- *   or retry rather than showing "no results".
+ * Returns a discriminated result; never throws. Malformed or disallowed input
+ * yields a stable `QueryValidationErrorCode`.
  */
-export type RankingOutcomeStatus = 'ok' | 'empty' | 'degraded';
-
-export interface RankingOutcomeInput {
-  /** Number of candidates returned; ignored when `dependencyFailed` is true. */
-  candidateCount: number;
-  /** True when the owning index/dependency errored or was unavailable. */
-  dependencyFailed?: boolean;
-}
-
-export interface RankingOutcome {
-  status: RankingOutcomeStatus;
-  /** True only for a genuine empty result (not a degraded failure). */
-  isEmpty: boolean;
-  /** True when a dependency failed; callers MUST NOT treat this as empty. */
-  isDegraded: boolean;
-}
-
-/**
- * Classify a search outcome, keeping true empty results distinct from degraded
- * dependency failures. Degraded takes precedence over empty.
- */
-export function classifyRankingOutcome(
-  input: RankingOutcomeInput,
-): RankingOutcome {
-  if (input.dependencyFailed) {
-    return { status: 'degraded', isEmpty: false, isDegraded: true };
+export function parseAdvancedQuery(
+  input: unknown,
+  options: NormalizationOptions = {},
+): QueryParseResult {
+  let raw: string;
+  try {
+    raw = typeof input === 'string' ? input : input == null ? '' : String(input);
+  } catch {
+    raw = '';
   }
-  const candidateCount = Number.isFinite(input.candidateCount)
-    ? Math.max(0, Math.floor(input.candidateCount))
-    : 0;
-  if (candidateCount === 0) {
-    return { status: 'empty', isEmpty: true, isDegraded: false };
+
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return fail('EMPTY_QUERY', 'Query must not be empty.');
   }
-  return { status: 'ok', isEmpty: false, isDegraded: false };
+
+  const clauses: QueryClause[] = [];
+  let totalTokens = 0;
+  let i = 0;
+  const len = trimmed.length;
+
+  while (i < len) {
+    // Skip whitespace between clauses.
+    while (i < len && /\s/.test(trimmed[i])) i++;
+    if (i >= len) break;
+
+    const clauseStart = i;
+    let negated = false;
+    if (trimmed[i] === '-') {
+      negated = true;
+      i++;
+    }
+
+    // Optional field scope: `field:` where field is allowlisted.
+    let field: AllowedField | null = null;
+    const fieldMatch = /^([A-Za-z_][A-Za-z0-9_]*):/.exec(trimmed.slice(i));
+    if (fieldMatch) {
+      const candidate = fieldMatch[1].toLowerCase();
+      if (!FIELD_SET.has(candidate)) {
+        return fail(
+          'UNKNOWN_FIELD',
+          `Unknown field "${fieldMatch[1]}". Allowed fields: ${ALLOWED_FIELDS.join(', ')}.`,
+          i,
+        );
+      }
+      field = candidate as AllowedField;
+      i += fieldMatch[0].length;
+    }
+
+    // Value: quoted phrase or bare word.
+    let value: string;
+    let phrase = false;
+    if (trimmed[i] === '"') {
+      phrase = true;
+      const close = trimmed.indexOf('"', i + 1);
+      if (close === -1) {
+        return fail('UNBALANCED_QUOTES', 'Unbalanced quotes in query.', i);
+      }
+      value = trimmed.slice(i + 1, close);
+      i = close + 1;
+    } else {
+      const start = i;
+      while (i < len && !/\s/.test(trimmed[i])) i++;
+      value = trimmed.slice(start, i);
+    }
+
+    if (!value) {
+      return fail('UNSUPPORTED_OPERATOR', 'Empty clause value.', clauseStart);
+    }
+
+    if (value.length > QUERY_LIMITS.maxClauseLength) {
+      return fail(
+        'CLAUSE_TOO_LONG',
+        `Clause exceeds maximum length of ${QUERY_LIMITS.maxClauseLength} characters.`,
+        clauseStart,
+      );
+    }
+
+    if (UNSUPPORTED_OPERATOR_PATTERN.test(value)) {
+      return fail(
+        'UNSUPPORTED_OPERATOR',
+        'Query contains an unsupported operator or wildcard.',
+        clauseStart,
+      );
+    }
+
+    const tokens = normalizeQuery(value, options);
+    if (tokens.length === 0) {
+      return fail('UNSUPPORTED_OPERATOR', 'Clause produced no searchable tokens.', clauseStart);
+    }
+
+    totalTokens += tokens.length;
+    if (totalTokens > QUERY_LIMITS.maxTokens) {
+      return fail(
+        'TOO_MANY_TOKENS',
+        `Query exceeds maximum of ${QUERY_LIMITS.maxTokens} tokens.`,
+        clauseStart,
+      );
+    }
+
+    clauses.push({ field, negated, phrase, tokens });
+    if (clauses.length > QUERY_LIMITS.maxClauses) {
+      return fail(
+        'TOO_MANY_CLAUSES',
+        `Query exceeds maximum of ${QUERY_LIMITS.maxClauses} clauses.`,
+        clauseStart,
+      );
+    }
+  }
+
+  if (clauses.length === 0) {
+    return fail('EMPTY_QUERY', 'Query must not be empty.');
+  }
+
+  return { ok: true, clauses };
 }

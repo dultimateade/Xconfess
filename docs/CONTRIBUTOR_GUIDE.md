@@ -113,11 +113,205 @@ If a full check cannot run locally because a dependency, Docker service, or
 platform tool is unavailable, document the failed command and the exact blocker
 in the pull request body.
 
+## Advanced Search Query Grammar
+
+Advanced search is parsed and enforced by the backend at the owning boundary
+(`backend/src/search`). The parser accepts only the documented grammar below;
+anything outside it is rejected with a stable validation error rather than
+being silently interpreted or forwarded to the database.
+
+### Allowlisted Fields
+
+Only these fields may appear on the left of an operator:
+
+- `author` — message author handle
+- `conversation` — conversation id
+- `tag` — message tag
+- `before` / `after` — ISO-8601 date bounds
+- `has` — attachment presence (`has:attachment`)
+
+Any other field name is rejected with `SEARCH_UNKNOWN_FIELD`.
+
+### Allowlisted Operators
+
+- `field:value` — equality match
+- `field:"quoted value"` — equality match with spaces
+- `-field:value` — negation
+- Bare terms (no operator) are treated as full-text terms
+
+Operators outside this set (for example `field>value`, `field~value`, or
+wildcards like `field:*`) are rejected with `SEARCH_UNSUPPORTED_OPERATOR`.
+
+### Complexity Limits
+
+The parser caps query complexity so a single request cannot trigger an
+expensive scan. Exceeding any limit is rejected with `SEARCH_QUERY_TOO_COMPLEX`:
+
+- Maximum of 32 tokens per query
+- Maximum of 16 clauses (field matches plus bare terms)
+- Maximum nesting depth of 2 (one level of parentheses)
+- Maximum of 256 characters per quoted value
+
+### Validation Error Codes
+
+Malformed or disallowed expressions return a stable error code and message so
+clients can render consistent feedback:
+
+| Code | Meaning |
+| --- | --- |
+| `SEARCH_EMPTY_QUERY` | Query is empty or whitespace only |
+| `SEARCH_UNKNOWN_FIELD` | Field is not in the allowlist |
+| `SEARCH_UNSUPPORTED_OPERATOR` | Operator is not in the allowlist |
+| `SEARCH_UNBALANCED_QUOTES` | Quoted value is not terminated |
+| `SEARCH_UNBALANCED_PARENS` | Parentheses are unbalanced |
+| `SEARCH_QUERY_TOO_COMPLEX` | A complexity limit was exceeded |
+
+### Failure Semantics
+
+- Invalid queries are rejected before any database access; they never reach
+the query builder.
+- Rejections return `400 Bad Request` with the error code above and a
+  human-readable message; they are not retried automatically.
+- Authorization is checked before parsing, so unauthorized callers receive
+  `403` regardless of query validity.
+
+### Testing Expectations
+
+Backend tests for this area must cover the expected path plus adversarial
+inputs (unknown fields, unsupported operators, unbalanced quotes/parens, and
+queries that exceed the complexity caps) and the regression risk of a
+malformed query reaching the database. Run them with:
+
+```bash
+npm run backend:test
+```
+
 ## Message Retention And Expiry
 
 Private messages have an explicit, enforceable lifecycle. Retention is chosen
 per conversation and enforced by the backend at the ownership boundary; clients
 must not assume messages live forever or that local copies outlive the server.
+
+### Supported Retention Choices And Defaults
+
+Moderation reviewers interpret ambiguous policy cases. To keep decisions
+consistent without letting consensus replace policy review, reviewer guidance is
+versioned and reviewers are calibrated against anonymized exercises.
+
+### Versioned Annotation Guidelines
+
+- Guidelines are versioned; every review decision records the guideline version
+  it was made under so past decisions remain reproducible.
+- Publishing a new guideline version is an authorized action (moderator/admin)
+  enforced at the owning backend boundary; unauthorized publishes are rejected
+  with `403`.
+- A decision referencing an unknown or retired guideline version is rejected
+  with `422` rather than silently falling back to the latest version.
+
+### Anonymized Calibration Exercises
+
+- Calibration exercises present anonymized cases (no reporter or author
+  identity) so reviewers judge the policy question, not the person.
+- Exercise responses are stored separately from live moderation decisions and
+  never affect a real case outcome.
+- Only authorized reviewers may fetch exercises or submit responses;
+  unauthorized access is rejected at the boundary.
+
+### Measuring Agreement
+
+- Reviewer agreement (e.g. inter-rater agreement such as Cohen's or Fleiss'
+  kappa) is computed over calibration responses and reported as a signal.
+- Agreement is **not** a substitute for policy review: a high-agreement but
+  policy-incorrect answer is still wrong, and consensus never auto-resolves a
+  live case.
+- Agreement metrics are advisory; final decisions remain with authorized
+  reviewers applying the current guideline version.
+
+### Testing Expectations
+
+Backend tests for this area must cover the expected path plus rejection cases
+(unauthorized guideline publish, unknown guideline version, unauthorized
+calibration access) and the regression risk that agreement metrics are treated
+as advisory rather than as an automatic decision. Run them with:
+
+```bash
+npm run backend:test
+```
+
+## Safe Policy Replay
+
+Policy migrations need a way to estimate how decisions would change under a new
+policy version **without** touching live user content or notifying anyone. The
+replay command runs over a selected set of moderation cases in isolation.
+
+### Running A Replay
+
+```bash
+npm run backend:replay -- \
+  --policy-version <new-version> \
+  --cases <case-id,case-id,...>
+```
+
+- Replay is an authorized action (moderator/admin) enforced at the owning
+  backend boundary; unauthorized invocations are rejected with `403`.
+- An unknown or retired target policy version is rejected with `422`.
+
+### Isolation Guarantees
+
+- Replay never mutates live user content, never writes production decision
+  records, and never triggers notifications or fanout.
+- Replay reads cases into an isolated evaluation context; results are written
+  only to the diff report, not to the case store.
+
+### Redaction
+
+- Replay inputs and outputs redact identifiers: user ids, author/reporter
+  identity, and raw content are replaced with stable opaque tokens.
+- The diff report contains only redacted tokens, decision labels, and counts —
+  never raw content or personal identifiers.
+
+### Diff Report
+
+- The report compares the recorded decision against the decision the new policy
+  version would produce, per case, and summarizes changed vs unchanged counts.
+- The report is advisory: it cannot apply decisions to production records.
+
+### Testing Expectations
+
+Backend tests for this area must cover the expected path plus rejection cases
+(unauthorized replay, unknown policy version) and the regression risk that a
+replay mutates live content, writes production decisions, or leaks identifiers.
+Run them with:
+
+```bash
+npm run backend:test
+```
+
+## User Safety Filters For Sensitive Content
+
+Users can opt in or out of seeing sensitive content categories. These are
+**display preferences only** and never change moderation enforcement.
+
+### Supported Categories
+
+- **Join** — a user may join only via an accepted invite or an explicit
+  self-join policy enabled for the conversation. Direct joins without either
+  are rejected with `403`.
+- **Leave** — any active member may leave. Leaving removes the member from
+  future fanout but preserves their historical access per the history rules
+  below.
+- **Remove** — only the conversation owner or an authorized moderator may
+  remove another member. Removing a non-member is a no-op success; removing
+yourself must go through the leave path.
+- Every transition is idempotent and records the actor, target, and reason so
+  audit trails stay consistent.
+
+### Where Preferences Are Applied
+
+- Only active members with the `invite` capability (owner, moderators, or
+  members when the conversation allows member invites) may create invites.
+- Invites are scoped to a single conversation and a single invitee, expire, and
+  
 
 ### Supported Retention Choices And Defaults
 
@@ -141,145 +335,44 @@ must not assume messages live forever or that local copies outlive the server.
 
 ### Deletion Completion Records
 
-- When a message is purged, the backend records a deletion completion marker
-  (message id, conversation id, timestamp, reason) **without** the message body.
-- These markers support audit and idempotent retries and must never contain
-  message content.
-
-### Authorization And Failure Semantics
-
-- Only authorized participants may read, change retention for, or delete
-  messages; unauthorized requests are rejected with `403` at the owning
-  boundary.
-- Purge failures are retried and surfaced; a message is never reported as
-  deleted until the deletion completion marker is written.
-
-### Testing Expectations
-
-Backend tests for this area must cover the expected path plus rejection cases
-(unauthorized retention change, unsupported retention value, expired read) and
-the regression risk of expired content leaking through indexes, notifications,
-or device sync. Run them with:
-
-```bash
-npm run backend:test && npm run frontend:test
-```
-
-## Conversation Ordering And Unread Reconciliation
-
-Conversation previews and unread counts are owned by the backend. Clients must
-treat the server as the single source of truth and never derive ordering or
-unread totals from local timestamps.
-
-### Deterministic Ordering
-
-- Conversation previews are ordered by a stable, server-assigned monotonic
-  sequence (not client `createdAt`/`updatedAt`). Ties are broken by the
-  conversation id so the order is total and reproducible.
-- Each message and preview carries an event cursor. Clients apply events in
-  cursor order and ignore any event whose cursor is not greater than the last
-  applied cursor for that conversation.
-
-### Reconnect Replay
-
-- On reconnect, clients resume from their last applied cursor. Replay is
-  idempotent: duplicate events are dropped and out-of-order events are buffered
-  or discarded rather than reordering previews.
-- Delayed delivery must not move a conversation ahead of a newer one; the
-  server sequence, not arrival time, decides position.
-
-### Unread Reconciliation
-
-- Unread counts are reconciled from authoritative server state (the unread
-  endpoint), not incremented optimistically from client events alone.
-- Reconciliation requires an authenticated session; unauthenticated or
-  unauthorized requests are rejected at the owning boundary and the client
-  keeps its last known counts rather than guessing.
-- On failure, clients surface the error and retry reconciliation; they must not
-  silently reset counts to zero.
-
-### Testing Expectations
-
-Backend tests for this area must cover the expected path plus delayed,
-duplicate, and out-of-order delivery, and the rejection/failure cases for
-unauthorized reconciliation. Run them with:
-
 ```bash
 npm run backend:test
 ```
 
-## Search Ranking Confidence
+## Cross-Domain Data Integrity Verification (#218)
 
-Search ranking is owned by the backend search boundary. Results carry an
-explicit confidence signal so clients can distinguish a trustworthy ranking
-from a degraded one instead of presenting unstable recommendations as if they
-were authoritative.
+Independent table-level constraints can leave subtle orphan references across boundaries.
+The platform provides a read-only integrity report endpoint at `GET /api/admin/integrity/report` with:
+- **Domains covered**: `identity` (links between users and anonymous identities), `content` (confessions, comments), `export` (export requests, chunks), and `moderation` (reports, evidence).
+- **Stable Error Codes**: Canonical `ERR_INTEGRITY_*` codes for predictable log parsing and alert routing.
+- **Bounded Execution**: Configurable timeout budgets (`timeoutMs`, default 5s, max 30s) and per-check row limits (`limit`, default 50, max 200). If execution exceeds time bounds, the report returns truncated without crashing.
+- **Repair Guidance**: Each violation includes an actionable SQL query or remediation step for operators.
+- **Authorization**: Strictly restricted to administrators via `JwtAuthGuard` and `AdminGuard`.
 
-### Confidence Thresholds
+## Locale-Aware Message Catalogues with Typed Coverage (#219)
 
-- Confidence is derived from the number of candidates and the match quality of
-  the top result. Both a minimum candidate count and a minimum top-score are
-  required for `high` confidence.
-- Sparse candidate sets (fewer than the minimum candidate count) are capped at
-  `low` confidence regardless of individual scores.
-- Queries with no exact matches are capped at `medium` confidence even when
-  fuzzy candidates exist.
-- Thresholds are defined as named constants at the search boundary so they can
-  be tuned and tested in one place.
+User-facing strings are decoupled from presentation components into typed message catalogues under `xconfess-frontend/app/lib/i18n/`.
+- **Catalogue Structure**: Canonical keys are defined in `types.ts` (`REQUIRED_MESSAGE_KEYS`) and implemented in locale files (`locales/en.ts`, `locales/es.ts`).
+- **Typed Coverage**: The TypeScript types enforce that all catalogues provide every required key. `assertCompleteCatalog` verifies runtime completeness and fails checks if any key is missing.
+- **Fallback Behavior**: When a localized string is missing in the user's active locale, the `useTranslation` hook automatically falls back to the default English (`en`) catalogue. If missing in all catalogues, the key itself is returned.
 
-### Fallback Behavior
+## Localized Formatting for Dates, Numbers, and Relative Time (#220)
 
-- When confidence is `low`, the boundary returns the ranked candidates but
-  flags the result as degraded so clients can label it as a best-effort match.
-- When there are no candidates at all, the boundary returns an explicit empty
-  result (`empty: true`) rather than a degraded flag, so clients can render a
-  true "no results" state.
+Shared formatters live in `xconfess-frontend/app/lib/i18n/formatters.ts` and wrap standard `Intl` APIs:
+- **Relative vs Absolute Time**: `formatRelativeTime` formats recent intervals into relative units (seconds, minutes, hours, days) and automatically transitions to absolute dates (`formatAbsoluteDate`) beyond configurable thresholds.
+- **Daylight Saving Time (DST)**: Relative durations use monotonic UTC millisecond math to avoid hour-boundary distortion during spring-forward or fall-back transitions.
+- **Safe Fallbacks**: Missing, null, undefined, or non-parseable inputs return safe fallback tokens (default `"—"`) rather than throwing runtime exceptions.
+- **Numbers and Pluralization**: `formatNumber` and `formatCount` format counts, compact abbreviations (`1.2K`), and locale-appropriate plural nouns.
 
-### Empty Results vs Degraded Dependencies
+## Cross-Tab Draft Conflict Resolution (#221)
 
-- A true empty result means the search dependency responded successfully and
-  found nothing; it is a normal `200` outcome with `empty: true`.
-- A degraded dependency (search backend unreachable or erroring) is a failure,
-  not an empty result. It is surfaced as an error at the owning boundary and
-  must never be reported as `empty: true`, so clients do not mistake an outage
-  for "no matches".
+When users edit confession drafts across multiple browser tabs:
+- **Revision Tracking**: Drafts maintain monotonic integer `version` numbers across saves.
+- **Stale Write Detection**: `useDrafts` inspects storage state prior to persisting. If another tab has committed a higher version, the local write is rejected and flagged as a `tab_conflict`.
+- **Dual-Version Preservation**: Unsaved local content and the newer conflicting version from storage are both captured in memory without data loss.
+- **Accessible Decision Flow**: `DraftManager` presents an accessible alert (`role="alert"`, `aria-live="assertive"`) offering choices to:
+  1. *Keep my version*: Rebase and persist local content with an incremented revision.
+  2. *Use other tab's version*: Overwrite the local editor with the newer copy.
+  3. *Save as separate draft*: Store the local content as a new draft, preserving both versions.
+  4. *Dismiss*: Dismiss the notice without altering editor state.
 
-### Testing Expectations
-
-Backend tests for this area must cover the expected path, sparse candidate
-fixtures, the no-exact-match case, the true empty result, and the degraded
-dependency failure. Run them with:
-
-```bash
-npm run backend:test
-```
-
-## Multi-Member Conversation Authorization
-
-Group conversations have their own authorization model. Membership, invites,
-history visibility, blocking, and fanout are all enforced by the backend at the
-ownership boundary; clients must not assume one-to-one messaging permissions
-extend to groups.
-
-### Membership Transitions
-
-- **Join** — a user may join only via an accepted invite or an explicit
-  self-join policy enabled for the conversation. Direct joins without either
-  are rejected with `403`.
-- **Leave** — any active member may leave. Leaving removes the member from
-  future fanout but preserves their historical access per the history rules
-  below.
-- **Remove** — only the conversation owner or an authorized moderator may
-  remove another member. Removing a non-member is a no-op success; removing
-  yourself must go through the leave path.
-- Every transition is idempotent and records the actor, target, and reason so
-  audit trails stay consistent.
-
-### Invite Authorization
-
-- Only active members with the `invite` capability (owner, moderators, or
-  members when the conversation allows member invites) may create invites.
-- Invites are scoped to a single conversation and a single invitee, expire, and
-  
-
-/* … truncated 2197 chars — edit only what you need near the top … */
