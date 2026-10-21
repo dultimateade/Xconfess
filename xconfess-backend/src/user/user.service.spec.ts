@@ -503,6 +503,44 @@ describe('UserService', () => {
     });
   });
 
+  describe('recovery code verification', () => {
+    it('consumes a single recovery code exactly once while storing only a verifier hash', async () => {
+      const code = 'ABCD1234EFGH5678';
+      const enc = CryptoUtil.encrypt(JSON.stringify([CryptoUtil.hash(code)]));
+      mockRepository.findOne.mockResolvedValue({
+        ...mockUser,
+        recoveryCodesEncrypted: enc.encrypted,
+        recoveryCodesIv: enc.iv,
+        recoveryCodesTag: enc.tag,
+      });
+      mockRepository.save.mockResolvedValue({
+        ...mockUser,
+        recoveryCodesEncrypted: enc.encrypted,
+        recoveryCodesIv: enc.iv,
+        recoveryCodesTag: enc.tag,
+      });
+
+      const firstUse = await service.consumeRecoveryCode(1, code);
+      const secondUse = await service.consumeRecoveryCode(1, code);
+
+      expect(firstUse).toBe(true);
+      expect(secondUse).toBe(false);
+      expect(mockRepository.save).toHaveBeenCalled();
+    });
+
+    it('rejects a recovery code that is not present in the verifier set', async () => {
+      const enc = CryptoUtil.encrypt(JSON.stringify([CryptoUtil.hash('VALID-ONE')]));
+      mockRepository.findOne.mockResolvedValue({
+        ...mockUser,
+        recoveryCodesEncrypted: enc.encrypted,
+        recoveryCodesIv: enc.iv,
+        recoveryCodesTag: enc.tag,
+      });
+
+      await expect(service.consumeRecoveryCode(1, 'NOT-HERE')).resolves.toBe(false);
+    });
+  });
+
   describe('deactivateAccount', () => {
     it('should deactivate a user account', async () => {
       const userId = 1;
