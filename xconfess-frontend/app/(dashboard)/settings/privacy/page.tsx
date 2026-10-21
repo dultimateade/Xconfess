@@ -1,37 +1,15 @@
 "use client";
 
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
-import Link from 'next/link';
-import {
-  Shield,
-  Eye,
-  EyeOff,
-  MessageSquare,
-  Database,
-  Save,
-  Sun,
-  Moon,
-  Laptop,
-  Lock,
-  Globe,
-  Bell,
-  BellOff,
-  RotateCcw,
-  ExternalLink,
-  Layers,
-  ArrowRight,
-  Info,
-} from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Shield, Eye, EyeOff, MessageSquare, Database, Save, Sun, Moon, Laptop, Lock, Globe, Bell, BellOff } from 'lucide-react';
 import { useGlobalToast } from '@/app/components/common/Toast';
 import { normalizeApiError } from '@/app/lib/api/errors';
 import { useTheme } from '@/app/lib/hooks/useTheme';
-
-export interface PrivacySettings {
-  isDiscoverable: boolean;
-  canReceiveReplies: boolean;
-  showReactions: boolean;
-  dataProcessingConsent: boolean;
-}
+import {
+  mergePrivacySettingsAfterConflict,
+  PRIVACY_SETTING_KEYS,
+  type PrivacySettings,
+} from '@/app/lib/utils/privacySettings';
 
 interface ToggleProps {
   checked: boolean;
@@ -165,6 +143,8 @@ export default function PrivacySettingsPage() {
   const [saving, setSaving] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const savedSettingsRef = useRef<PrivacySettings | null>(null);
+  const saveInFlightRef = useRef(false);
   const toast = useGlobalToast();
 
   const loadSettings = useCallback(async () => {
@@ -181,6 +161,7 @@ export default function PrivacySettingsPage() {
       }
 
       const data: PrivacySettings = await response.json();
+      savedSettingsRef.current = data;
       setSettings(data);
       setSavedSettings(data);
       setDirty(false);
@@ -220,8 +201,9 @@ export default function PrivacySettingsPage() {
   };
 
   const handleSave = async () => {
-    if (!settings) return;
+    if (!settings || saveInFlightRef.current) return;
 
+    saveInFlightRef.current = true;
     setSaving(true);
     try {
       const response = await fetch('/api/users/privacy-settings', {
@@ -233,10 +215,38 @@ export default function PrivacySettingsPage() {
 
       if (!response.ok) {
         const error = await normalizeApiError(response);
+        if (error.status === 409) {
+          const refreshResponse = await fetch('/api/users/privacy-settings', {
+            credentials: 'include',
+          });
+
+          if (!refreshResponse.ok) {
+            const refreshError = await normalizeApiError(refreshResponse);
+            throw new Error(refreshError.message || error.message);
+          }
+
+          const serverSettings: PrivacySettings = await refreshResponse.json();
+          const baseline = savedSettingsRef.current ?? settings;
+          const mergedSettings = mergePrivacySettingsAfterConflict(
+            settings,
+            baseline,
+            serverSettings,
+          );
+          savedSettingsRef.current = serverSettings;
+          setSettings(mergedSettings);
+          setDirty(
+            PRIVACY_SETTING_KEYS.some(
+              (key) => mergedSettings[key] !== serverSettings[key],
+            ),
+          );
+          toast.error('Settings changed elsewhere. Your edits were preserved; review and save again.');
+          return;
+        }
         throw new Error(error.message);
       }
 
       const updated: PrivacySettings = await response.json();
+      savedSettingsRef.current = updated;
       setSettings(updated);
       setSavedSettings(updated);
       setDirty(false);
@@ -244,6 +254,7 @@ export default function PrivacySettingsPage() {
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Failed to save privacy settings');
     } finally {
+      saveInFlightRef.current = false;
       setSaving(false);
     }
   };
