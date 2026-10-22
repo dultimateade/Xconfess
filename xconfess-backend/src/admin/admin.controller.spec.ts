@@ -475,7 +475,7 @@ describe('AdminController', () => {
             req,
           );
         default:
-          throw new Error(`Unknown endpoint ${endpoint}`);
+          throw new Error('Unknown admin endpoint');
       }
     };
 
