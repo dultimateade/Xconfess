@@ -104,6 +104,11 @@ export const envValidationSchema = Joi.object({
     'string.min':
       'JWT_SECRET must be at least 32 characters long for production-strength signing.',
   }),
+  STEP_UP_PROOF_TTL_SECONDS: Joi.number()
+    .integer()
+    .min(60)
+    .max(900)
+    .default(300),
 
   // ---- App / URLs ----
   APP_SECRET: Joi.string()

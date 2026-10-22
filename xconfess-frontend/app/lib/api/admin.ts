@@ -164,7 +164,11 @@ export const adminApi = {
     return response.data;
   },
 
-  requestStepUp: async (payload: { password?: string; totpToken?: string }) => {
+  requestStepUp: async (payload: {
+    password?: string;
+    totpToken?: string;
+    recoveryCode?: string;
+  }) => {
     const response = await apiClient.post('/api/auth/step-up', payload);
     return response.data as { stepUpToken: string; expiresIn: number };
   },
