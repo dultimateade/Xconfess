@@ -438,6 +438,22 @@ export const envValidationSchema = Joi.object({
 
   // â”€â”€ Redis queue health â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   REDIS_QUEUE_LATENCY_THRESHOLD_MS: Joi.number().default(250),
+  REDIS_QUEUE_WAIT_THRESHOLD_MS: Joi.number().integer().min(1).default(30000),
+  NOTIFICATION_WORKER_CONCURRENCY: Joi.number()
+    .integer()
+    .min(1)
+    .max(100)
+    .default(5),
+  EXPORT_WORKER_CONCURRENCY: Joi.number()
+    .integer()
+    .min(1)
+    .max(100)
+    .default(1),
+  CONFESSION_DRAFT_WORKER_CONCURRENCY: Joi.number()
+    .integer()
+    .min(1)
+    .max(100)
+    .default(1),
 
   // â”€â”€ Soroban event range verifier (read-only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   SOROBAN_EVENT_VERIFIER_ENABLED: Joi.string()

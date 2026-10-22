@@ -19,9 +19,11 @@ describe('ExportProcessor', () => {
   beforeEach(async () => {
     exportRepo = {
       update: jest.fn(),
+      findOneBy: jest.fn().mockResolvedValue(null),
     };
     chunkRepo = {
       save: jest.fn(),
+      delete: jest.fn(),
     };
     userRepo = {
       findOneBy: jest.fn(),
@@ -114,7 +116,7 @@ describe('ExportProcessor', () => {
         new Error('Test error'),
       );
 
-      await processor.process(mockJob);
+      await expect(processor.process(mockJob)).rejects.toThrow('Test error');
 
       expect(dataExportService.markExportProcessing).toHaveBeenCalledWith(
         'req-1',
@@ -135,7 +137,7 @@ describe('ExportProcessor', () => {
         new Error('timeout'),
       );
 
-      await processor.process(mockJob);
+      await expect(processor.process(mockJob)).rejects.toThrow('timeout');
 
       expect(exportRepo.update).not.toHaveBeenCalledWith(
         'req-fail',
@@ -157,7 +159,9 @@ describe('ExportProcessor', () => {
         new Error('DB connection lost'),
       );
 
-      await processor.process(mockJob);
+      await expect(processor.process(mockJob)).rejects.toThrow(
+        'DB connection lost',
+      );
 
       expect(dataExportService.markExportFailed).toHaveBeenCalledWith(
         'req-err',
@@ -165,13 +169,15 @@ describe('ExportProcessor', () => {
       );
     });
 
-    it('should skip processing for non-process-export job names', async () => {
+    it('should reject non-process-export job names', async () => {
       const mockJob = {
         name: 'other-job',
         data: { userId: '1', requestId: 'req-skip' },
       } as Job;
 
-      await processor.process(mockJob);
+      await expect(processor.process(mockJob)).rejects.toThrow(
+        'Unsupported export job name',
+      );
 
       expect(dataExportService.markExportProcessing).not.toHaveBeenCalled();
       expect(dataExportService.markExportFailed).not.toHaveBeenCalled();

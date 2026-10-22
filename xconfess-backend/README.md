@@ -100,6 +100,31 @@ HTTP APIs are served only through NestJS: `main.ts` bootstraps `AppModule`, and 
 
 Shared cross-cutting middleware used at bootstrap lives under `src/middleware/` (for example `RequestIdMiddleware`). Feature code belongs in the module directories listed below.
 
+## Background job capacity and queue health
+
+Worker concurrency is bounded per queue so expensive export jobs cannot consume
+notification or confession-draft worker slots. These are per-worker settings;
+fleet capacity is the configured concurrency multiplied by the number of
+workers registered for that queue.
+
+| Environment variable | Default | Valid range | Queue/job |
+| --- | ---: | ---: | --- |
+| `NOTIFICATION_WORKER_CONCURRENCY` | `5` | `1`–`100` | `notifications` / `send-notification` |
+| `EXPORT_WORKER_CONCURRENCY` | `1` | `1`–`100` | `export-queue` / `process-export` |
+| `CONFESSION_DRAFT_WORKER_CONCURRENCY` | `1` | `1`–`100` | `confession-draft-publisher` |
+| `REDIS_QUEUE_WAIT_THRESHOLD_MS` | `30000` | positive integer | Oldest waiting job age before readiness degrades |
+
+All workers for a given queue should use the same concurrency setting so the
+capacity estimate in `/api/health/ready` remains meaningful. Its queue details
+include `waitMs`, estimated `capacity`, and `saturated`; saturation means the
+active count has filled estimated capacity while at least one job is waiting.
+Wait exceeding the configured threshold degrades readiness. Unsupported job
+names reject explicitly and remain subject to the queue's retry/failure policy.
+
+The authenticated API/controller remains the producer authorization boundary;
+do not enqueue jobs from an untrusted caller without enforcing ownership or
+administrative authorization there. See [queue readiness signals](../docs/HEALTH_ENDPOINT_QUICK_REFERENCE.md#what-gets-checked).
+
 ## Auth Endpoint Split (`/users/*` vs `/auth/*`)
 
 Both route groups are active in this codebase:

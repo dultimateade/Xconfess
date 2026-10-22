@@ -269,4 +269,21 @@ describe('Environment Validation', () => {
     const { error } = envValidationSchema.validate(config);
     expect(error).toBeUndefined();
   });
+
+  it('should reject invalid queue concurrency and wait thresholds', () => {
+    const config = {
+      ...baseConfig,
+      CONFESSION_ENCRYPTION_KEY: validKey,
+      NOTIFICATION_WORKER_CONCURRENCY: 0,
+      EXPORT_WORKER_CONCURRENCY: 1.5,
+      REDIS_QUEUE_WAIT_THRESHOLD_MS: 0,
+    };
+
+    const { error } = envValidationSchema.validate(config);
+
+    expect(error).toBeDefined();
+    expect(error!.message).toContain('NOTIFICATION_WORKER_CONCURRENCY');
+    expect(error!.message).toContain('EXPORT_WORKER_CONCURRENCY');
+    expect(error!.message).toContain('REDIS_QUEUE_WAIT_THRESHOLD_MS');
+  });
 });
