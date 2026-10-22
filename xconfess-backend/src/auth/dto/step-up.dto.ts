@@ -21,6 +21,12 @@ export class StepUpDto {
   @MaxLength(10, { message: 'TOTP token is too long' })
   totpToken?: string;
 
+  @IsOptional()
+  @IsString({ message: 'Recovery code must be a string' })
+  @MinLength(8, { message: 'Recovery code is too short' })
+  @MaxLength(64, { message: 'Recovery code is too long' })
+  recoveryCode?: string;
+
   /**
    * Base64url-encoded WebAuthn assertion response (PublicKeyCredential.json).
    * Verified against the stored challenge, origin, and RP id by the WebAuthn service.
