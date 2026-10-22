@@ -91,6 +91,11 @@ export const envValidationSchema = Joi.object({
   TYPEORM_BASELINE_EXISTING_SCHEMA: Joi.string()
     .valid('true', 'false', '1', '0', 'yes', 'no', 'on', 'off')
     .optional(),
+  ADMIN_ACTION_APPROVAL_TTL_MINUTES: Joi.number()
+    .integer()
+    .min(5)
+    .max(1440)
+    .default(30),
 
   // ---- Auth ----
   JWT_SECRET: Joi.string().min(32).required().messages({

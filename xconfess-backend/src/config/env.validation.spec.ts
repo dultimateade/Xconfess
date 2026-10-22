@@ -38,6 +38,24 @@ describe('Environment Validation', () => {
     expect(value.CONFESSION_ENCRYPTION_KEY).toBe(validKey);
   });
 
+  it('defaults and bounds the admin action approval expiry window', () => {
+    const config = {
+      ...baseConfig,
+      CONFESSION_ENCRYPTION_KEY: validKey,
+    };
+    const { error, value } = envValidationSchema.validate(config);
+    expect(error).toBeUndefined();
+    expect(value.ADMIN_ACTION_APPROVAL_TTL_MINUTES).toBe(30);
+
+    for (const invalidTtl of [4, 1441]) {
+      const invalid = envValidationSchema.validate({
+        ...config,
+        ADMIN_ACTION_APPROVAL_TTL_MINUTES: invalidTtl,
+      });
+      expect(invalid.error).toBeDefined();
+    }
+  });
+
   it('should validate traction exclusion IDs without sensitive personal values', () => {
     const config = {
       ...baseConfig,
