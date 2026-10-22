@@ -205,7 +205,17 @@ APP_ENV=local
 TYPEORM_SYNCHRONIZE=false
 STELLAR_NETWORK=testnet
 STELLAR_HORIZON_URL=https://horizon-testnet.stellar.org
+ENABLE_BACKGROUND_JOBS=true
+REPUTATION_RECONCILIATION_BATCH_SIZE=100
 ```
+
+The scheduled reputation reconciliation worker runs only when
+`ENABLE_BACKGROUND_JOBS=true`. It resumes from a database checkpoint, processes
+at most one batch per schedule, and clamps the configured batch size to 1-500.
+Apply the `CreateReputationReconciliationCheckpoints20261022000001` migration
+before enabling it in a deployed environment. Progress and failure events
+contain aggregate counts and generic error codes, not confession or transaction
+identifiers.
 
 ### TypeORM Synchronize Policy
 
