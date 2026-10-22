@@ -4,6 +4,7 @@ import { Job, Queue } from 'bullmq';
 import { EmailNotificationService } from '../services/email-notification.service';
 import { NotificationType } from '../entities/notification.entity';
 import { AppLogger } from '../../logger/logger.service';
+import { CorrelationContext } from '../../common/correlation/correlation.context';
 
 export const NOTIFICATION_QUEUE = 'notifications';
 export const NOTIFICATION_DLQ = 'notifications-dlq';
@@ -14,6 +15,7 @@ export interface NotificationJobData {
   title: string;
   message: string;
   metadata?: any;
+  correlationId?: string;
   _meta?: {
     originalJobId: string | undefined;
     failedAt: string;
@@ -40,6 +42,16 @@ export class NotificationProcessor extends WorkerHost {
 
   // ------------------------------------------------------------------ process
   async process(job: Job<NotificationJobData>): Promise<void> {
+    const correlationId =
+      job.data.correlationId ?? CorrelationContext.getOrGenerateRequestId();
+    return CorrelationContext.run(correlationId, () =>
+      this.processNotification(job),
+    );
+  }
+
+  private async processNotification(
+    job: Job<NotificationJobData>,
+  ): Promise<void> {
     if (job.name === 'send-notification') {
       this.logger.log(
         `Processing notification job ${job.id} (attempt ${job.attemptsMade + 1})` +
@@ -76,6 +88,17 @@ export class NotificationProcessor extends WorkerHost {
     error: Error,
   ): Promise<void> {
     if (!job) return;
+    const correlationId =
+      job.data.correlationId ?? CorrelationContext.getOrGenerateRequestId();
+    return CorrelationContext.run(correlationId, () =>
+      this.handleFailed(job, error),
+    );
+  }
+
+  private async handleFailed(
+    job: Job<NotificationJobData>,
+    error: Error,
+  ): Promise<void> {
 
     const maxAttempts = (job.opts as any)?.attempts ?? 1;
 
