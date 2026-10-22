@@ -143,10 +143,14 @@ describe('DataExportService', () => {
         }),
       );
 
-      expect(mockExportQueue.add).toHaveBeenCalledWith('process-export', {
-        userId: '42',
-        requestId: 'req-1',
-      });
+      expect(mockExportQueue.add).toHaveBeenCalledWith(
+        'process-export',
+        expect.objectContaining({
+          userId: '42',
+          requestId: 'req-1',
+          correlationId: expect.any(String),
+        }),
+      );
       expect(mockAuditLogService.logExportLifecycleEvent).toHaveBeenCalledWith(
         expect.objectContaining({
           action: 'request_created',
@@ -188,10 +192,15 @@ describe('DataExportService', () => {
 
       await service.markExportProcessing('req-proc-1');
 
-      expect(mockExportRepository.update).toHaveBeenCalledWith('req-proc-1', {
-        status: 'PROCESSING',
-        processingAt: new Date('2026-03-24T22:05:00.000Z'),
-      });
+      expect(mockExportRepository.update).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({ id: 'req-proc-1', status: 'PROCESSING' }),
+        ]),
+        {
+          status: 'PROCESSING',
+          processingAt: new Date('2026-03-24T22:05:00.000Z'),
+        },
+      );
     } finally {
       jest.useRealTimers();
     }
@@ -211,12 +220,15 @@ describe('DataExportService', () => {
 
       await service.markExportFailed('req-fail-1', 'out of memory');
 
-      expect(mockExportRepository.update).toHaveBeenCalledWith('req-fail-1', {
-        status: 'FAILED',
-        failedAt: new Date('2026-03-24T22:10:00.000Z'),
-        retryCount: 1,
-        lastFailureReason: 'out of memory',
-      });
+      expect(mockExportRepository.update).toHaveBeenCalledWith(
+        { id: 'req-fail-1', status: 'PROCESSING' },
+        {
+          status: 'FAILED',
+          failedAt: new Date('2026-03-24T22:10:00.000Z'),
+          retryCount: 1,
+          lastFailureReason: 'out of memory',
+        },
+      );
     } finally {
       jest.useRealTimers();
     }
@@ -232,7 +244,7 @@ describe('DataExportService', () => {
     await service.markExportFailed('req-fail-2', 'disk full');
 
     expect(mockExportRepository.update).toHaveBeenCalledWith(
-      'req-fail-2',
+      { id: 'req-fail-2', status: 'PROCESSING' },
       expect.objectContaining({
         retryCount: 2,
         lastFailureReason: 'disk full',
@@ -247,7 +259,7 @@ describe('DataExportService', () => {
     await service.markExportFailed('req-missing', 'error');
 
     expect(mockExportRepository.update).toHaveBeenCalledWith(
-      'req-missing',
+      { id: 'req-missing', status: 'PROCESSING' },
       expect.objectContaining({ retryCount: 1 }),
     );
   });

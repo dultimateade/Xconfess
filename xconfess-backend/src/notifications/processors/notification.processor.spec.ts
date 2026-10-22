@@ -2,6 +2,7 @@ import { NotificationProcessor, NOTIFICATION_DLQ, NOTIFICATION_QUEUE, Notificati
 import { EmailNotificationService } from '../services/email-notification.service';
 import { AppLogger } from '../../logger/logger.service';
 import { Queue, Job } from 'bullmq';
+import { CorrelationContext } from '../../common/correlation/correlation.context';
 
 describe('NotificationProcessor', () => {
   let processor: NotificationProcessor;
@@ -41,6 +42,30 @@ describe('NotificationProcessor', () => {
 
     await expect(processor.process(job)).resolves.not.toThrow();
     expect(emailNotificationService.sendEmail).toHaveBeenCalledWith(job.data);
+  });
+
+  it('binds a persisted correlation ID while processing a queued job', async () => {
+    let observedRequestId: string | undefined;
+    emailNotificationService.sendEmail.mockImplementation(async () => {
+      observedRequestId = CorrelationContext.getRequestId();
+    });
+    const job = {
+      name: 'send-notification',
+      id: 'job-correlated',
+      attemptsMade: 0,
+      data: {
+        userId: 'user-1',
+        type: 'test',
+        title: 'Title',
+        message: 'Message',
+        correlationId: 'trace-123',
+      },
+      opts: {},
+    } as unknown as Job<NotificationJobData>;
+
+    await processor.process(job);
+
+    expect(observedRequestId).toBe('trace-123');
   });
 
   it('should process notification jobs and emit processing metrics', async () => {
