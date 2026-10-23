@@ -88,6 +88,14 @@ Applying a change uses `POST /api/admin/moderation/config/thresholds` with the s
 
 Approved thresholds take effect in memory for the current backend process. `MODERATION_HIGH_THRESHOLD` and `MODERATION_MEDIUM_THRESHOLD` remain the startup baseline, so a process restart restores the configured values. In multi-instance deployments, route preview and approval to the same instance; otherwise approval fails closed if that instance has no matching preview.
 
+## Provider And Background-Job Reliability
+
+- `MODERATION_PROVIDER_TIMEOUT_MS` defaults to `5000` (bounded to `500`-`10000` ms), and `MODERATION_PROVIDER_MAX_ATTEMPTS` defaults to `2` (bounded to `1`-`3`). Retries use jitter and apply only to transient failures of side-effect-free moderation scoring calls; permanent 4xx responses are not retried. Provider metrics include only the provider and bounded outcome.
+- SMTP connection, greeting, and socket budgets are controlled by `MAIL_CONNECTION_TIMEOUT_MS` (`5000`), `MAIL_GREETING_TIMEOUT_MS` (`5000`), and `MAIL_SOCKET_TIMEOUT_MS` (`10000`), each bounded to `500`-`30000` ms. SMTP delivery is not automatically retried after an ambiguous send failure; only the existing configured provider fallback is used.
+- Performance measurements use matched route templates; unmatched routes are grouped under a fixed prefix. The logger accepts only its finite metric label vocabulary and caps each metric store at 1,000 series. Request IDs, user IDs, raw paths, query strings, and content are not metric labels.
+- Notification and export jobs carry a generated or request-scoped `correlationId`; workers bind it to async logging context, and notification retries/DLQ copies retain it. Do not put credentials or user content in this field.
+- Export jobs retry at most three times with exponential backoff. Chunk indexes are checkpoints: retries replace matching indexes and finalize only after generation completes; cancellation is checked before chunk writes and finalization. Chunk downloads are available only after `READY`.
+
 <p align="center">
   <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
 </p>

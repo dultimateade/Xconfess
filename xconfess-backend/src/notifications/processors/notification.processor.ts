@@ -15,6 +15,7 @@ export interface NotificationJobData {
   title: string;
   message: string;
   metadata?: any;
+  correlationId?: string;
   _meta?: {
     originalJobId: string | undefined;
     failedAt: string;
@@ -81,6 +82,17 @@ export class NotificationProcessor extends WorkerHost {
     error: Error,
   ): Promise<void> {
     if (!job) return;
+    const correlationId =
+      job.data.correlationId ?? CorrelationContext.getOrGenerateRequestId();
+    return CorrelationContext.run(correlationId, () =>
+      this.handleFailed(job, error),
+    );
+  }
+
+  private async handleFailed(
+    job: Job<NotificationJobData>,
+    error: Error,
+  ): Promise<void> {
 
     const maxAttempts = (job.opts as any)?.attempts ?? 1;
 

@@ -62,6 +62,11 @@ export const envValidationSchema = Joi.object({
     .default('development'),
   APP_ENV: Joi.string().optional(),
   PORT: Joi.number().port().default(3000),
+  MODERATION_PROVIDER_TIMEOUT_MS: Joi.number().min(500).max(10000).default(5000),
+  MODERATION_PROVIDER_MAX_ATTEMPTS: Joi.number().integer().min(1).max(3).default(2),
+  MAIL_CONNECTION_TIMEOUT_MS: Joi.number().min(500).max(30000).default(5000),
+  MAIL_GREETING_TIMEOUT_MS: Joi.number().min(500).max(30000).default(5000),
+  MAIL_SOCKET_TIMEOUT_MS: Joi.number().min(500).max(30000).default(10000),
 
   // â”€â”€ Database â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   DB_HOST: Joi.string().required().messages({

@@ -32,7 +32,7 @@ describe('ExportProcessor', () => {
       compileUserData: jest.fn(),
       convertToCsv: jest.fn(() => 'test,csv'),
       markExportFailed: jest.fn(),
-      markExportProcessing: jest.fn(),
+      markExportProcessing: jest.fn().mockResolvedValue(true),
       isExportCancelled: jest.fn(async () => false), // Issue #106: cancellation check
     };
 
@@ -97,7 +97,7 @@ describe('ExportProcessor', () => {
         'req-1',
       );
       expect(exportRepo.update).toHaveBeenCalledWith(
-        'req-1',
+        { id: 'req-1', status: 'PROCESSING' },
         expect.objectContaining({
           status: 'READY',
           isChunked: true,
