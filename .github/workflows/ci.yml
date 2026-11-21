@@ -69,6 +69,8 @@ jobs:
           cache-dependency-path: package-lock.json
       - run: npm install --global npm@10.9.3
       - run: npm ci --include=optional --no-audit --no-fund
+      - name: Build frontend for route-budget measurement
+        run: npm --prefix xconfess-frontend run build
       - name: Run startup budget harness tests
         run: npm run benchmark:triage:test
       - name: Enforce frontend startup budget
