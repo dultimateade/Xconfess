@@ -5,6 +5,7 @@
   "scripts": {
     "backend:test": "npm --prefix xconfess-backend run backend:test",
     "frontend:test": "npm --prefix xconfess-frontend run test",
+    "migration:gate:dry-run": "node scripts/migration-gate.js --dry-run && npm --prefix xconfess-backend run migration:rehearsal",
     "benchmark:triage:test": "node scripts/benchmark-triage.test.js",
     "frontend:budget": "node scripts/frontend-budget.js"
   }
