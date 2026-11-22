@@ -17,7 +17,7 @@ async function getConfession(id: string) {
     const res = await fetch(`${APP_URL}/api/confessions/${id}`, {
       method: "GET",
       headers: { "Content-Type": "application/json" },
-      next: { revalidate: 30 },
+      cache: "no-store",
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -30,6 +30,10 @@ async function getConfession(id: string) {
       reactions: data.reactions ?? { like: 0, love: 0 },
       commentCount: data.commentCount ?? 0,
       isAnchored: data.isAnchored ?? false,
+      contentWarning:
+        data.contentWarning === true ||
+        data.requiresReview === true ||
+        data.moderationStatus === "flagged",
       stellarTxHash: data.stellarTxHash ?? null,
       anchorStatus:
         data.anchorStatus ??
@@ -52,12 +56,14 @@ export async function generateMetadata({
   const title = confession
     ? `Confession — xConfess`
     : "Confession not found — xConfess";
-  const description = confession
-    ? confession.content.slice(0, 155).replace(/\n/g, " ") +
-      (confession.content.length > 155 ? "…" : "")
-    : "View confession on xConfess";
+  const description = !confession
+    ? "View confession on xConfess"
+    : confession.contentWarning
+      ? "This confession may contain sensitive material. View it on xConfess."
+      : confession.content.slice(0, 155).replace(/\n/g, " ") +
+        (confession.content.length > 155 ? "…" : "");
   const url = `${APP_URL}/confessions/${id}`;
-  const ogImage = confession
+  const ogImage = confession && !confession.contentWarning
     ? `${APP_URL}/api/og?text=${encodeURIComponent(confession.content.slice(0, 150))}`
     : `${APP_URL}/api/og?text=XConfess`;
 

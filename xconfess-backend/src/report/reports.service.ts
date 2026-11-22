@@ -98,7 +98,7 @@ export class ReportsService {
       const outboxRepo = manager.getRepository(OutboxEvent);
 
       const confession = await confessionRepo.findOne({
-        where: { id: confessionId },
+        where: { id: confessionId, isDeleted: false, isHidden: false },
         relations: [
           'anonymousUser',
           'anonymousUser.userLinks',

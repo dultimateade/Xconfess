@@ -231,6 +231,7 @@ describe('WsJwtGuard', () => {
     ];
 
     const setupActor = (actor: Actor, endpoint: (typeof endpoints)[number]) => {
+      mockSocket.data = {};
       if (actor === 'anonymous') {
         mockSocket.handshake = { auth: {}, headers: {} };
         return;

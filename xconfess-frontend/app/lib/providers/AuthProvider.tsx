@@ -1,7 +1,7 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode, useCallback } from 'react';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { authApi } from '../api/authService';
 import {
   AuthContextValue,
@@ -16,6 +16,13 @@ import { AppError } from '../utils/errorHandler';
 import {
   NormalizedAuthError,
 } from '@/lib/normalizeAuthError';
+import {
+  advanceAccountGeneration,
+  publishAccountChange,
+  subscribeToAccountChanges,
+  getAccountGeneration,
+  isAccountGenerationCurrent,
+} from '../auth/accountSession';
 
 /**
  * Auth Context
@@ -35,6 +42,7 @@ interface AuthProviderProps {
  */
 export function AuthProvider({ children }: AuthProviderProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const setStoreUser = useAuthStore((s) => s.setUser);
   const storeLogout = useAuthStore((s) => s.logout);
   const isDevBypassEnabled =
@@ -49,11 +57,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
     isSessionExpired: false,
   });
 
-  const isolateAccountState = useCallback((accountId: string | null) => {
+  const clearAccountState = useCallback(() => {
     if (typeof window === "undefined") return;
+    advanceAccountGeneration();
     window.dispatchEvent(
       new CustomEvent("xconfess:account-change", {
-        detail: { accountId },
+        detail: { accountId: null },
       }),
     );
     const accountStateKeys = [
@@ -63,10 +72,30 @@ export function AuthProvider({ children }: AuthProviderProps) {
       "xconfess.pendingConfession.v1",
       "xconfess_account_settings",
     ];
-    accountStateKeys.forEach((key) => window.localStorage.removeItem(key));
-    window.localStorage.removeItem("xconfess-auth");
-    window.sessionStorage.removeItem("xconfess_scroll_positions");
+    const failedKeys: string[] = [];
+    for (const key of [...accountStateKeys, "xconfess-auth"]) {
+      try {
+        window.localStorage.removeItem(key);
+      } catch {
+        failedKeys.push(`localStorage:${key}`);
+      }
+    }
+    try {
+      window.sessionStorage.removeItem("xconfess_scroll_positions");
+    } catch {
+      failedKeys.push("sessionStorage:xconfess_scroll_positions");
+    }
+    if (failedKeys.length) {
+      console.error("Could not clear all account-scoped browser data.", { failedKeys });
+    }
   }, []);
+
+  const isolateAccountState = useCallback((notifyOtherTabs = false) => {
+    clearAccountState();
+    if (notifyOtherTabs && !publishAccountChange()) {
+      console.error("Could not notify other tabs that the active account changed.");
+    }
+  }, [clearAccountState]);
 
   // Guard against concurrent checkAuth calls (race-condition fix)
   const checkInProgress = useRef(false);
@@ -75,12 +104,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
    * Handle TERMINAL auth errors: clear session and redirect to login.
    * TERMINAL errors mean the session is definitely invalid and cannot be recovered.
    */
-  const handleTerminalAuthError = useCallback((error: AppError) => {
+  const handleTerminalAuthError = useCallback((error: AppError, notifyOtherTabs = false) => {
     // Check if this is a normalized TERMINAL auth error
     const normalized = (error.details as any)?.normalized as NormalizedAuthError | undefined;
     
     if (normalized?.type === "TERMINAL") {
-      isolateAccountState(null);
+      isolateAccountState(notifyOtherTabs);
       setStoreUser(null);
       storeLogout();
       setState({
@@ -92,6 +121,20 @@ export function AuthProvider({ children }: AuthProviderProps) {
       });
     }
   }, [setStoreUser, storeLogout, isolateAccountState]);
+
+  useEffect(() => subscribeToAccountChanges(() => {
+    clearAccountState();
+    setStoreUser(null);
+    storeLogout();
+    setState({
+      user: null,
+      isAuthenticated: false,
+      isLoading: false,
+      error: null,
+      isSessionExpired: false,
+    });
+    router.replace("/login");
+  }), [clearAccountState, router, setStoreUser, storeLogout]);
 
   /**
   * Check if user is authenticated by validating token with backend.
@@ -109,7 +152,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       };
 
       setStoreUser(mockUser as never);
-      isolateAccountState(mockUser.id);
+      isolateAccountState();
       setState({
         user: mockUser as never,
         isAuthenticated: true,
@@ -125,10 +168,12 @@ export function AuthProvider({ children }: AuthProviderProps) {
       return;
     }
     checkInProgress.current = true;
+    const requestGeneration = getAccountGeneration();
 
     try {
       const user = await authApi.getCurrentUser();
-      isolateAccountState(user.id);
+      if (!isAccountGenerationCurrent(requestGeneration)) return;
+      isolateAccountState();
       setStoreUser(user);
       setState({
         user,
@@ -138,12 +183,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
         isSessionExpired: false,
       });
     } catch (error) {
+      if (!isAccountGenerationCurrent(requestGeneration)) return;
       // Handle TERMINAL auth errors (invalid session, forbidden, etc.)
       if (error instanceof AppError) {
-        handleTerminalAuthError(error);
+        handleTerminalAuthError(error, true);
       } else {
         // Not authenticated or session expired
-        isolateAccountState(null);
+        isolateAccountState();
         setStoreUser(null);
         setState({
           user: null,
@@ -184,7 +230,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
       // User data is now managed in the store and state
       // Token is in the HttpOnly cookie
-      isolateAccountState(response.user.id);
+      isolateAccountState(true);
       setStoreUser(response.user);
 
       setState({
@@ -242,8 +288,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const logout = (): void => {
     // Fire-and-forget the session cookie deletion, but clear local state
     // immediately so AuthGuard can react without waiting for the network.
-    authApi.logout().catch(() => {});
-    isolateAccountState(null);
+    authApi.logout().catch((error) => {
+      console.error("Could not revoke the server session during logout.", error);
+    });
+    isolateAccountState(true);
     storeLogout();
     setState({
       user: null,

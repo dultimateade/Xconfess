@@ -31,6 +31,7 @@ export default function QueryProvider({ children }: { children: React.ReactNode 
 
   useEffect(() => {
     const handleAccountChange = () => {
+      void client.cancelQueries();
       client.clear();
     };
     window.addEventListener("xconfess:account-change", handleAccountChange);

@@ -1,6 +1,11 @@
 ﻿import axios, { AxiosError, AxiosResponse } from "axios";
 import { logError } from "@/app/lib/utils/errorHandler";
 import { useAuthStore } from "@/app/lib/store/authStore";
+import {
+	AccountChangedError,
+	getAccountGeneration,
+	isAccountGenerationCurrent,
+} from "@/app/lib/auth/accountSession";
 
 /**
  * Axios instance for browser-facing API calls.
@@ -27,6 +32,7 @@ apiClient.interceptors.request.use(
 	(config) => {
 		// Tokens are now handled via secure session cookies
 		config.withCredentials = true;
+		config.accountGeneration = getAccountGeneration();
 
 		// Generate correlation ID for tracing
 		const correlationId = crypto.randomUUID();
@@ -51,6 +57,7 @@ declare module "axios" {
 	interface InternalAxiosRequestConfig {
 		__retryCount?: number;
 		correlationId?: string;
+		accountGeneration?: number;
 	}
 }
 
@@ -65,11 +72,21 @@ function shouldSuppressExpectedDevOfflineError(error: AxiosError): boolean {
 
 // Response interceptor for error handling and retries
 apiClient.interceptors.response.use(
-	(response: AxiosResponse) => response,
+	(response: AxiosResponse) => {
+		const generation = response.config.accountGeneration;
+		if (generation !== undefined && !isAccountGenerationCurrent(generation)) {
+			return Promise.reject(new AccountChangedError());
+		}
+		return response;
+	},
 	async (error: AxiosError) => {
 		const config = error.config;
 		if (!config) {
 			return Promise.reject(error);
+		}
+		if (config.accountGeneration !== undefined
+			&& !isAccountGenerationCurrent(config.accountGeneration)) {
+			return Promise.reject(new AccountChangedError());
 		}
 
 		config.__retryCount = config.__retryCount ?? 0;

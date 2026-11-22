@@ -3,12 +3,14 @@
 import { memo, useEffect, useState } from "react";
 import { ScrollRestorationLink } from "@/app/components/common/ScrollRestorationLink";
 import Image from "next/image";
-import { MessageSquare, Eye, ShieldAlert } from "lucide-react";
+import { MessageSquare, Eye } from "lucide-react";
 import { ReactionButton } from "./ReactionButtons";
 import { AnchorButton } from "./AnchorButton";
 import { TipButton } from "./TipButton";
 import { ShareButton } from "./ShareButton";
 import { ResilientMediaImage } from "./ResilientMediaImage";
+import { ContentWarning } from "./ContentWarning";
+import { ReportConfessionButton } from "./ReportConfessionButton";
 import type { NormalizedConfession } from "../../lib/utils/normalizeConfession";
 import { getTipStats, type TipStats } from "@/lib/services/tipping.service";
 
@@ -24,32 +26,7 @@ export const ConfessionCard = memo(({ confession }: Props) => {
   const [tipStats, setTipStats] = useState<TipStats | null>(
     confession.tipStats || null
   );
-  const [showWarnedContent, setShowWarnedContent] = useState(false);
-  const [warningsCollapsed, setWarningsCollapsed] = useState(true);
   const [avatarError, setAvatarError] = useState(false);
-
-  useEffect(() => {
-    const storedPreference = window.localStorage.getItem(
-      "contentWarningsCollapsed"
-    );
-    if (storedPreference !== null) {
-      setWarningsCollapsed(storedPreference !== "false");
-      return;
-    }
-
-    fetch("/api/users/privacy-settings", { credentials: "include" })
-      .then((response) => (response.ok ? response.json() : null))
-      .then((settings) => {
-        if (settings && typeof settings.contentWarningsCollapsed === "boolean") {
-          setWarningsCollapsed(settings.contentWarningsCollapsed);
-          window.localStorage.setItem(
-            "contentWarningsCollapsed",
-            String(settings.contentWarningsCollapsed)
-          );
-        }
-      })
-      .catch(() => undefined);
-  }, []);
 
   useEffect(() => {
     if (!tipStats) {
@@ -133,26 +110,7 @@ export const ConfessionCard = memo(({ confession }: Props) => {
         </div>
       </div>
 
-      {confession.contentWarning && warningsCollapsed && !showWarnedContent ? (
-        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-5">
-          <div className="flex items-start gap-3">
-            <ShieldAlert className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" aria-hidden="true" />
-            <div>
-              <p className="font-semibold text-[var(--foreground)]">Content warning</p>
-              <p className="mt-1 text-sm leading-6 text-[var(--secondary)]">
-                This confession may contain sensitive material. You choose whether to view it.
-              </p>
-              <button
-                type="button"
-                onClick={() => setShowWarnedContent(true)}
-                className="mt-4 rounded-lg border border-amber-500/40 px-3 py-2 text-sm font-semibold text-[var(--foreground)] transition-colors hover:bg-amber-500/15 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)]"
-              >
-                Show confession
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : (
+      <ContentWarning contentWarning={confession.contentWarning}>
         <div className="min-w-0">
           <ScrollRestorationLink
             href={`/confessions/${confession.id}`}
@@ -173,7 +131,7 @@ export const ConfessionCard = memo(({ confession }: Props) => {
             />
           )}
         </div>
-      )}
+      </ContentWarning>
 
       <div className="mt-3 flex flex-col gap-3 border-t border-[var(--border)] pt-3 sm:mt-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-2 text-xs text-[var(--secondary)]">
@@ -200,6 +158,7 @@ export const ConfessionCard = memo(({ confession }: Props) => {
         </div>
 
         <div className="flex w-full flex-wrap items-center justify-between gap-2 sm:w-auto sm:justify-end">
+          <ReportConfessionButton confessionId={confession.id} />
           <TipButton
             confessionId={confession.id}
             recipientAddress={confession.author?.stellarAddress}

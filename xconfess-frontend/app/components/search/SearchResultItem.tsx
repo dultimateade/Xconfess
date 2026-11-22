@@ -1,10 +1,10 @@
-"use client";
-
 import Link from "next/link";
 import { Eye, Heart, MessageSquare, Anchor, ExternalLink } from "lucide-react";
 import type { SearchConfession } from "@/app/lib/types/search";
 import { cn } from "@/app/lib/utils/cn";
 import { getStellarExplorerUrl } from "@/app/lib/utils/stellar";
+import { ContentWarning } from "@/app/components/confession/ContentWarning";
+import { ReportConfessionButton } from "@/app/components/confession/ReportConfessionButton";
 
 interface SearchResultItemProps {
   confession: SearchConfession;
@@ -104,57 +104,64 @@ export function SearchResultItem({
   const explorerUrl = getStellarExplorerUrl(confession.stellarTxHash);
 
   return (
-    <Link
-      href={`/confessions/${confession.id}`}
+    <article
       className={cn(
         "luxury-panel block rounded-[28px] p-5 transition-colors hover:bg-[var(--surface-strong)]",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]",
         className
       )}
       data-testid="search-result-item"
     >
-      <HighlightedContent
-        content={confession.content}
-        query={searchQuery}
-        className="mb-4 font-editorial text-2xl"
-      />
-      <div className="flex flex-wrap items-center gap-4 text-sm text-[var(--secondary)]">
-        <span>{timeAgo(confession.createdAt)}</span>
-        <span className="inline-flex items-center gap-1.5">
-          <Heart className="h-4 w-4" />
-          {totalReactions} reactions
-        </span>
-        {confession.commentCount != null && (
+      <ContentWarning contentWarning={confession.contentWarning}>
+        <Link
+          href={`/confessions/${confession.id}`}
+          className="block rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--background)]"
+        >
+          <HighlightedContent
+            content={confession.content}
+            query={searchQuery}
+            className="mb-4 font-editorial text-2xl"
+          />
+        </Link>
+      </ContentWarning>
+      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center gap-4 text-sm text-[var(--secondary)]">
+          <span>{timeAgo(confession.createdAt)}</span>
           <span className="inline-flex items-center gap-1.5">
-            <MessageSquare className="h-4 w-4" />
-            {confession.commentCount}
+            <Heart className="h-4 w-4" />
+            {totalReactions} reactions
           </span>
-        )}
-        {confession.viewCount != null && (
-          <span className="inline-flex items-center gap-1.5">
-            <Eye className="h-4 w-4" />
-            {confession.viewCount}
-          </span>
-        )}
-        {confession.isAnchored && (
-          <span className="inline-flex items-center gap-1 text-green-600">
-            <Anchor className="h-4 w-4" />
-            Anchored
-          </span>
-        )}
-        {explorerUrl && (
-          <a
-            href={explorerUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="inline-flex items-center gap-1 text-blue-600 hover:text-blue-800 text-xs"
-          >
-            <ExternalLink className="h-3 w-3" />
-            Explorer
-          </a>
-        )}
+          {confession.commentCount != null && (
+            <span className="inline-flex items-center gap-1.5">
+              <MessageSquare className="h-4 w-4" />
+              {confession.commentCount}
+            </span>
+          )}
+          {confession.viewCount != null && (
+            <span className="inline-flex items-center gap-1.5">
+              <Eye className="h-4 w-4" />
+              {confession.viewCount}
+            </span>
+          )}
+          {confession.isAnchored && (
+            <span className="inline-flex items-center gap-1 text-green-600">
+              <Anchor className="h-4 w-4" />
+              Anchored
+            </span>
+          )}
+          {explorerUrl && (
+            <a
+              href={explorerUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+            >
+              <ExternalLink className="h-3 w-3" />
+              Explorer
+            </a>
+          )}
+        </div>
+        <ReportConfessionButton confessionId={confession.id} />
       </div>
-    </Link>
+    </article>
   );
 }

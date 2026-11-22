@@ -108,6 +108,32 @@ describe('ReportsService — idempotency & replay safety (#780)', () => {
     expect(reportRepository.findOne).not.toHaveBeenCalled();
   });
 
+  it('rejects new reports when the confession is hidden or deleted', async () => {
+    const confessionFindOne = jest.fn().mockResolvedValue(null);
+    reportRepository.manager.transaction.mockImplementation(async (cb: any) =>
+      cb({
+        getRepository: () => ({ findOne: confessionFindOne }),
+      }),
+    );
+
+    await expect(
+      service.createReport('conf-hidden', 7, { type: ReportType.SPAM }),
+    ).rejects.toBeInstanceOf(NotFoundException);
+
+    expect(confessionFindOne).toHaveBeenCalledWith({
+      where: {
+        id: 'conf-hidden',
+        isDeleted: false,
+        isHidden: false,
+      },
+      relations: [
+        'anonymousUser',
+        'anonymousUser.userLinks',
+        'anonymousUser.userLinks.user',
+      ],
+    });
+  });
+
   // ── 24-hour dedup replay (no idempotency key) ─────────────────────────────
 
   it('returns existing report (not error) for authenticated duplicate within 24h', async () => {

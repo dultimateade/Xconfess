@@ -54,6 +54,7 @@ export interface RawConfession {
   isAnchored?: boolean;
   stellarTxHash?: string | null;
   tipStats?: TipStats | null;
+  contentWarning?: boolean;
   requiresReview?: boolean;
   moderationStatus?: string;
   author?: {
@@ -103,7 +104,9 @@ export function normalizeConfession(raw: RawConfession): NormalizedConfession {
     stellarTxHash: raw.stellarTxHash ?? null,
     tipStats: raw.tipStats ?? null,
     contentWarning:
-      raw.requiresReview === true || raw.moderationStatus === "flagged",
+      raw.contentWarning === true ||
+      raw.requiresReview === true ||
+      raw.moderationStatus === "flagged",
     mediaUrl: raw.mediaUrl ?? raw.imageUrl ?? raw.media_url ?? raw.image_url ?? null,
     mediaAspectRatio:
       raw.mediaAspectRatio ??

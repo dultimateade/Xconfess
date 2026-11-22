@@ -6,7 +6,10 @@ import { BadRequestException, ForbiddenException, NotFoundException } from '@nes
 import { AnonymousConfessionRepository } from './repository/confession.repository';
 import { ConfessionViewCacheService } from './confession-view-cache.service';
 import { SortOrder } from './dto/get-confessions.dto';
-import { AiModerationService } from '../moderation/ai-moderation.service';
+import {
+  AiModerationService,
+  ModerationStatus,
+} from '../moderation/ai-moderation.service';
 import { ModerationRepositoryService } from '../moderation/moderation-repository.service';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { AnonymousUserService } from '../user/anonymous-user.service';
@@ -21,12 +24,28 @@ import { encryptConfession } from '../utils/confession-encryption';
 import { AnomalyDetectionService } from '../anomaly/anomaly-detection.service';
 import { ConfessionIdempotencyService } from './confession-idempotency.service';
 
+jest.mock('../stellar/stellar.service', () => ({
+  StellarService: class StellarService {},
+}));
+jest.mock('../stellar/contract.service', () => ({
+  ContractService: class ContractService {},
+}));
+jest.mock('../cache/cache.service', () => ({
+  CacheService: class CacheService {},
+  CACHE_TTL: {
+    CONFESSION_SINGLE: 1800,
+    CONFESSION_LIST: 300,
+    TRENDING: 120,
+  },
+}));
+
 describe('ConfessionService', () => {
   let service: ConfessionService;
   let repo: jest.Mocked<Repository<AnonymousConfession>>;
   let qb: Partial<SelectQueryBuilder<AnonymousConfession>> & any;
   let anonUserService: any;
   let cacheServiceMock: any;
+  let transactionUpdateMock: jest.Mock;
 
   beforeEach(async () => {
     qb = {
@@ -43,12 +62,18 @@ describe('ConfessionService', () => {
       take: jest.fn().mockReturnThis(),
       getMany: jest.fn(),
     };
+    transactionUpdateMock = jest.fn();
     repo = {
       create: jest.fn(),
       save: jest.fn(),
       findOne: jest.fn(),
       createQueryBuilder: jest.fn().mockReturnValue(qb),
       update: jest.fn(),
+      manager: {
+        transaction: jest.fn((callback: (manager: any) => Promise<void>) =>
+          callback({ update: transactionUpdateMock }),
+        ),
+      },
     } as any;
 
     const module: TestingModule = await Test.createTestingModule({
@@ -67,7 +92,7 @@ describe('ConfessionService', () => {
           provide: ModerationRepositoryService,
           useValue: {
             createLog: jest.fn(),
-            getLogsByConfession: jest.fn(),
+            getLogsByConfession: jest.fn().mockResolvedValue([]),
             updateReview: jest.fn(),
           },
         },
@@ -106,6 +131,8 @@ describe('ConfessionService', () => {
             get: jest.fn().mockResolvedValue(null),
             set: jest.fn(),
             delPattern: jest.fn(),
+            del: jest.fn(),
+            invalidateSegment: jest.fn(),
           },
         },
         { provide: TagService, useValue: { validateTags: jest.fn() } },
@@ -136,7 +163,8 @@ describe('ConfessionService', () => {
       message: 'Confession soft-deleted',
       id: '1',
     });
-    expect(repo.update).toHaveBeenCalledWith(
+    expect(transactionUpdateMock).toHaveBeenCalledWith(
+      AnonymousConfession,
       '1',
       expect.objectContaining({ isDeleted: true, deletedAt: expect.any(Date) }),
     );
@@ -274,6 +302,34 @@ describe('ConfessionService', () => {
       );
     });
 
+    it('returns a safe warning signal without moderation internals for details', async () => {
+      repo.findOne.mockResolvedValue({
+        id: 'flagged-single',
+        message: encryptConfession('sensitive text', '12345678901234567890123456789012'),
+        created_at: new Date(),
+        view_count: 0,
+        moderationStatus: 'flagged',
+        requiresReview: true,
+        moderationScore: 0.95,
+        moderationFlags: ['private-category'],
+        moderationDetails: { provider: 'private' },
+        isDeleted: false,
+        isHidden: false,
+      } as any);
+
+      const result = await service.getConfessionByIdWithViewCount(
+        'flagged-single',
+        { ip: '127.0.0.1', headers: {} } as any,
+      );
+
+      expect(result.contentWarning).toBe(true);
+      expect(result.moderationStatus).toBeUndefined();
+      expect(result.requiresReview).toBeUndefined();
+      expect(result.moderationScore).toBeUndefined();
+      expect(result.moderationFlags).toBeUndefined();
+      expect(result.moderationDetails).toBeUndefined();
+    });
+
     it('uses CONFESSION_LIST TTL (300s) for confession list cache', async () => {
       const req = { page: 1, limit: 10, sort: SortOrder.NEWEST };
       qb.getMany.mockResolvedValue([]);
@@ -288,6 +344,31 @@ describe('ConfessionService', () => {
     it('invalidateConfessionCache clears list keys but not single keys', async () => {
       (service as any).invalidateConfessionCache();
       expect(cacheServiceMock.delPattern).toHaveBeenCalledWith('confessions:');
+    });
+
+    it('invalidates public caches after a moderator status transition', async () => {
+      const confession = {
+        id: 'moderated',
+        moderationStatus: ModerationStatus.FLAGGED,
+        requiresReview: true,
+        isHidden: false,
+      };
+      repo.findOne.mockResolvedValue(confession as any);
+      repo.save.mockImplementation(async (value: any) => value);
+
+      await service.updateModerationStatus(
+        'moderated',
+        ModerationStatus.RESOLVED,
+        'moderator-1',
+      );
+
+      expect(cacheServiceMock.del).toHaveBeenCalledWith(
+        'confession:moderated',
+      );
+      expect(cacheServiceMock.invalidateSegment).toHaveBeenCalledWith(
+        'confessions',
+        'confession moderation status changed',
+      );
     });
   });
 });

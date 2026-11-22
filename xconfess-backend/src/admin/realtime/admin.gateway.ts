@@ -42,6 +42,7 @@ interface AdminSocketData {
 @WebSocketGateway({ namespace: 'admin' })
 export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(AdminGateway.name);
+  private readonly userSockets = new Map<number, Set<string>>();
 
   @WebSocketServer()
   server: Server;
@@ -71,12 +72,10 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
     if (candidate === undefined || candidate === null || candidate === '')
       return null;
 
-    const userId =
-      typeof candidate === 'number'
-        ? candidate
-        : Number.parseInt(String(candidate), 10);
+    if (typeof candidate === 'string' && !/^\d+$/.test(candidate)) return null;
+    const userId = Number(candidate);
 
-    return Number.isFinite(userId) ? userId : null;
+    return Number.isSafeInteger(userId) && userId > 0 ? userId : null;
   }
 
   private getSocketData(client: Socket): AdminSocketData {
@@ -111,12 +110,12 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       }
 
       const user = await this.userService.findById(userId);
-      if (user?.role !== UserRole.ADMIN) {
+      if (user?.role !== UserRole.ADMIN || user.is_active !== true) {
         this.wsLogger.logSubscriptionRejected({
           socketId: client.id,
           userId,
           channel: ADMIN_ROOM,
-          reason: `Insufficient role — got '${user?.role ?? 'none'}', required '${UserRole.ADMIN}'`,
+          reason: `Inactive account or insufficient role — got '${user?.role ?? 'none'}', required active '${UserRole.ADMIN}'`,
         });
         client.disconnect(true);
         return;
@@ -125,6 +124,8 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
       const socketData = this.getSocketData(client);
       socketData.userId = userId;
       socketData.user = { id: userId, role: user.role };
+      client.data.wsAuthToken = token;
+      this.trackSocket(userId, client.id);
 
       await client.join(ADMIN_ROOM);
 
@@ -149,9 +150,101 @@ export class AdminGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   handleDisconnect(@ConnectedSocket() client: Socket) {
     const socketData = this.getSocketData(client);
+    if (socketData.userId !== undefined) {
+      this.untrackSocket(socketData.userId, client.id);
+    }
     this.logger.log(
       `Admin disconnected: ${socketData.userId ?? 'unknown'} (${client.id})`,
     );
+  }
+
+  @SubscribeMessage('auth:refresh')
+  async handleAuthRefresh(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: SocketAuthPayload,
+  ) {
+    const token = payload?.token;
+    if (!token || typeof token !== 'string') {
+      client.emit('auth:rejected', {
+        reason: 'NO_TOKEN_PROVIDED',
+        timestamp: new Date().toISOString(),
+      });
+      return;
+    }
+
+    try {
+      const decoded = this.jwtService.verify<AdminSocketJwtPayload>(token);
+      const userId = this.resolveJwtUserId(decoded);
+      if (userId === null) throw new Error('MISSING_SUBJECT');
+
+      const user = await this.userService.findById(userId);
+      if (!user || user.is_active !== true || user.role !== UserRole.ADMIN) {
+        throw new Error('SESSION_REVOKED_OR_INSUFFICIENT_ROLE');
+      }
+
+      const socketData = this.getSocketData(client);
+      if (socketData.userId !== undefined && socketData.userId !== userId) {
+        this.untrackSocket(socketData.userId, client.id);
+      }
+      socketData.userId = userId;
+      socketData.user = { id: userId, role: user.role };
+      client.data.wsAuthToken = token;
+      this.trackSocket(userId, client.id);
+      await client.join(ADMIN_ROOM);
+
+      client.emit('auth:refreshed', {
+        success: true,
+        userId: String(userId),
+        timestamp: new Date().toISOString(),
+      });
+    } catch {
+      const currentUserId = this.getSocketData(client).userId;
+      if (currentUserId !== undefined) {
+        this.untrackSocket(currentUserId, client.id);
+      }
+      client.emit('auth:revoked', {
+        reason: 'SESSION_REVOKED_OR_EXPIRED',
+        timestamp: new Date().toISOString(),
+      });
+      client.disconnect(true);
+    }
+  }
+
+  revokeUserSessions(userId: number, reason = 'SESSION_REVOKED'): number {
+    const socketIds = this.userSockets.get(userId);
+    if (!socketIds?.size) return 0;
+
+    let disconnectedCount = 0;
+    for (const socketId of Array.from(socketIds)) {
+      const socket = this.server?.sockets?.sockets?.get?.(socketId);
+      if (!socket) continue;
+
+      socket.emit('auth:revoked', {
+        reason,
+        timestamp: new Date().toISOString(),
+      });
+      socket.disconnect(true);
+      disconnectedCount++;
+    }
+
+    this.userSockets.delete(userId);
+    return disconnectedCount;
+  }
+
+  private trackSocket(userId: number, socketId: string): void {
+    let socketIds = this.userSockets.get(userId);
+    if (!socketIds) {
+      socketIds = new Set<string>();
+      this.userSockets.set(userId, socketIds);
+    }
+    socketIds.add(socketId);
+  }
+
+  private untrackSocket(userId: number, socketId: string): void {
+    const socketIds = this.userSockets.get(userId);
+    if (!socketIds) return;
+    socketIds.delete(socketId);
+    if (socketIds.size === 0) this.userSockets.delete(userId);
   }
 
   @UseGuards(WsJwtGuard, WsRolesGuard)

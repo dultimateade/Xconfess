@@ -18,7 +18,7 @@ export async function GET(
     const response = await fetch(backend.url, {
       method: "GET",
       headers: { "Content-Type": "application/json", "x-request-id": requestId },
-      next: { revalidate: 30 },
+      cache: "no-store",
     });
 
     if (!response.ok) {
@@ -76,6 +76,10 @@ export async function GET(
         ? data.comments.length
         : (data.commentCount ?? 0),
       isAnchored: data.isAnchored ?? data.is_anchored ?? false,
+      contentWarning:
+        data.contentWarning === true ||
+        data.requiresReview === true ||
+        data.moderationStatus === "flagged",
       stellarTxHash: data.stellarTxHash ?? data.stellar_tx_hash ?? null,
       author: data.anonymousUser
         ? { id: data.anonymousUser.id, username: "Anonymous", avatar: null }

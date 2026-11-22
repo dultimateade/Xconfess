@@ -29,6 +29,7 @@
       "wasm_file": "target/wasm32v1-none/release/reputation_badges.wasm"
     }
   },
+  "environment": "staging",
   "generated_at_utc": "2026-08-22T10:41:02Z",
   "network": "testnet",
   "target": "wasm32v1-none"

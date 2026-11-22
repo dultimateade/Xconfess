@@ -35,6 +35,37 @@ Admin reference for content moderation transitions.
 
 Self-transitions (`X → X`) are always rejected.
 
+## Public rendering and report lifecycle
+
+The public confession contract exposes only `contentWarning`, a boolean
+derived from the review-required/flagged state. Scores, moderation categories,
+and provider details remain private. Feed cards, search previews, and detail
+pages collapse warned text by default; the reader may reveal it for the
+current view, or use the existing privacy preference to opt out of collapsing.
+Notification items link to the detail page instead of embedding confession
+text, so the same warning and availability checks apply there. Hidden and
+deleted confessions are excluded from public reads and cannot receive new
+reports.
+
+Reports are created only for an available confession and an identified
+reporter (anonymous identity or wallet). Repeated reports from the same
+reporter within 24 hours return the existing report rather than creating a
+duplicate. `pending` and `reviewing` reports may be resolved or dismissed;
+`resolved` and `dismissed` are terminal, and attempts to change either status
+again are rejected. Failed requests do not mark the report successful in the
+UI and may be retried.
+
+Hiding requires moderator capability and step-up verification and immediately
+invalidates public confession caches. Deletion remains a two-administrator
+workflow: the requester submits an approval request, and a different
+administrator must approve it before deletion executes. Expired or failed
+approval operations do not delete the confession.
+
+These are API and rendering behavior changes only; no database migration is
+required. Existing records derive the public warning from their current
+moderation fields, and clients that ignore the optional `contentWarning` field
+remain compatible.
+
 ## Side Effects
 
 - **Audit log** — every transition is recorded via `ModerationLog`

@@ -49,6 +49,23 @@ describe("normalizeConfession", () => {
       expect(result.viewCount).toBe(42);
     });
 
+    describe("contentWarning field", () => {
+      it("preserves the safe public warning signal returned by the API", () => {
+        expect(
+          normalizeConfession({ contentWarning: true }).contentWarning,
+        ).toBe(true);
+      });
+
+      it("derives warnings from moderation fields used by older API responses", () => {
+        expect(
+          normalizeConfession({ requiresReview: true }).contentWarning,
+        ).toBe(true);
+        expect(
+          normalizeConfession({ moderationStatus: "flagged" }).contentWarning,
+        ).toBe(true);
+      });
+    });
+
     it("falls back to `viewCount` when `view_count` is absent", () => {
       const result = normalizeConfession({ viewCount: 7 });
       expect(result.viewCount).toBe(7);

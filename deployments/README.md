@@ -72,6 +72,28 @@ Verification checks the trusted signature and re-hashes the local WASM and
 ABI artifacts. Consumers at the release boundary must reject failed
 verification; they must not fall back to unsigned contract IDs.
 
+### Committed metadata gate
+
+Run the repository-wide manifest gate before merging deployment or ABI changes:
+
+```bash
+npm run contracts:validate-manifests
+```
+
+The gate validates all committed ABI/WASM manifests, deployment records, and
+fixture snapshots. It fails when:
+
+- networks or network passphrases disagree across metadata;
+- a contract set, contract ID, version, WASM digest, or ABI digest drifts;
+- a deployed or snapshotted contract ID is not a valid Stellar contract ID;
+- a deployment record is missing `network`, `environment`, `target`,
+  `generated_at_utc`, or required contract fields; or
+- a recorded ABI digest does not match the committed ABI artifact.
+
+This validation is a release gate, not a runtime fallback. Invalid or missing
+metadata must be corrected and retried; consumers must not silently substitute
+an unverified contract ID.
+
 ## Rollback Evidence Archive
 
 Rollback drills for both application deploys and schema migrations must leave

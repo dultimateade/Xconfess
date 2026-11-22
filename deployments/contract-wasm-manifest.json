@@ -17,32 +17,32 @@
       "sha256": "fc4f4e6ccb4b38ad71ace722a69dc3470a675d3f112788abba94bb3b443ce7d7",
       "version": "0.1.0",
       "wasm_file": "target/wasm32v1-none/release/confession_anchor.wasm",
-      "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC4",
-      "abi_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+      "contract_id": "CB5XMDHT66EISB4WXM4YGNDHYRMZDX42TOHZEAENIUTSSMRFHJSFRNHB",
+      "abi_sha256": "e568708b4d198a6c5b4d0ebc0390efb36e40274d4113fbb0242cf7114338797e"
     },
     "confession-registry": {
       "bytes": 55169,
       "sha256": "0a4708682d777075100f5fb7f4e6d3222fef83ccf49a252b0f49c5167bcdfdce",
       "version": "0.1.0",
       "wasm_file": "target/wasm32v1-none/release/confession_registry.wasm",
-      "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC5",
-      "abi_sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      "contract_id": "CDS3WZ2CBA2JAIGK2NJ7KOO3VPBFWSJ34FWMMVXEIA7O7ACQO3VWH2PQ",
+      "abi_sha256": "709b64a1f0c10d1b703484ae155a5f8794f6e9d61f7f988658ef2df826cf9e4a"
     },
     "anonymous-tipping": {
       "bytes": 29389,
       "sha256": "38c3d5d76bc026a1a3d25dabc473d9b37a2dd60787145400a1bb327624b76928",
       "version": "1.0.0",
       "wasm_file": "target/wasm32v1-none/release/anonymous_tipping.wasm",
-      "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC6",
-      "abi_sha256": "3333333333333333333333333333333333333333333333333333333333333333"
+      "contract_id": "CC74UWNAAYDTPEPVKR4CPANWJSF6GI2PCI7BLN6M46KB6CSQYVYLHIWM",
+      "abi_sha256": "6a1c5487a441e7a0c99cff05222b3885370b4c3587a7dfc86a9d87f68e82bfd9"
     },
     "reputation-badges": {
       "bytes": 42694,
       "sha256": "a1737b45c44ded77f714769f3a16fcfb876ae0658e3db5262cc7d64d9c3274f7",
       "version": "0.0.0",
       "wasm_file": "target/wasm32v1-none/release/reputation_badges.wasm",
-      "contract_id": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABSC7",
-      "abi_sha256": "4444444444444444444444444444444444444444444444444444444444444444"
+      "contract_id": "CDAN4HZHY6XNQR3TRPLPJKVKNURVMMQMF7XNZ6AUNJNFLR77J4DNAEYI",
+      "abi_sha256": "bcce1272d90bbdfa20c6fa170306dcb79f1c6cd0c9698685e1d43b1d74c033b0"
     }
   },
   "generated_at_utc": "2026-08-22T10:41:02Z",

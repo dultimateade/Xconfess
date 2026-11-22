@@ -10,6 +10,8 @@ import {
 } from '@/app/components/admin/ReportModerationTimeline';
 import { queryKeys } from '@/app/lib/api/queryKeys';
 import { useAdminConfirmation } from '@/app/components/admin/useAdminConfirmation';
+import { useStepUp } from '@/app/hooks/useStepUp';
+import StepUpModal from './StepUpModal';
 
 interface ReportDetailProps {
   report: Report;
@@ -24,14 +26,27 @@ export default function ReportDetail({
   const [resolutionNotes, setResolutionNotes] = useState('');
   const queryClient = useQueryClient();
   const { openConfirmation, confirmDialog } = useAdminConfirmation();
+  const stepUp = useStepUp();
+
+  const invalidateModerationViews = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: queryKeys.confessions.all }),
+      queryClient.invalidateQueries({ queryKey: queryKeys.admin.reports.all() }),
+      queryClient.invalidateQueries({
+        queryKey: queryKeys.admin.actionApprovals.all(),
+      }),
+    ]);
+  };
 
   const resolveMutation = useMutation({
     mutationFn: ({ id, notes }: { id: string; notes?: string }) =>
       adminApi.resolveReport(id, notes),
     onMutate: async ({ id }) => {
-      await queryClient.cancelQueries({ queryKey: ['admin-reports'] });
-      const previousData = queryClient.getQueryData(['admin-reports']);
-      queryClient.setQueriesData({ queryKey: ['admin-reports'] }, (old: any) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.admin.reports.all() });
+      const snapshots = queryClient.getQueriesData({
+        queryKey: queryKeys.admin.reports.all(),
+      });
+      queryClient.setQueriesData({ queryKey: queryKeys.admin.reports.all() }, (old: any) => {
         if (!old?.reports) return old;
         return {
           ...old,
@@ -40,15 +55,13 @@ export default function ReportDetail({
           ),
         };
       });
-      return { previousData };
+      return { snapshots };
     },
     onError: (_err, _vars, context) => {
-      if (context?.previousData) {
-        queryClient.setQueriesData({ queryKey: ['admin-reports'] }, context.previousData);
-      }
+      context?.snapshots?.forEach(([key, data]) => queryClient.setQueryData(key, data));
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin-reports'] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.admin.reports.all() });
     },
   });
 
@@ -56,9 +69,11 @@ export default function ReportDetail({
     mutationFn: ({ id, notes }: { id: string; notes?: string }) =>
       adminApi.dismissReport(id, notes),
     onMutate: async ({ id }) => {
-      await queryClient.cancelQueries({ queryKey: ['admin-reports'] });
-      const previousData = queryClient.getQueryData(['admin-reports']);
-      queryClient.setQueriesData({ queryKey: ['admin-reports'] }, (old: any) => {
+      await queryClient.cancelQueries({ queryKey: queryKeys.admin.reports.all() });
+      const snapshots = queryClient.getQueriesData({
+        queryKey: queryKeys.admin.reports.all(),
+      });
+      queryClient.setQueriesData({ queryKey: queryKeys.admin.reports.all() }, (old: any) => {
         if (!old?.reports) return old;
         return {
           ...old,
@@ -67,15 +82,13 @@ export default function ReportDetail({
           ),
         };
       });
-      return { previousData };
+      return { snapshots };
     },
     onError: (_err, _vars, context) => {
-      if (context?.previousData) {
-        queryClient.setQueriesData({ queryKey: ['admin-reports'] }, context.previousData);
-      }
+      context?.snapshots?.forEach(([key, data]) => queryClient.setQueryData(key, data));
     },
     onSettled: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin-reports'] });
+      void queryClient.invalidateQueries({ queryKey: queryKeys.admin.reports.all() });
     },
   });
 
@@ -164,10 +177,15 @@ export default function ReportDetail({
       confirmLabel: 'Submit request',
       variant: 'danger',
       action: () =>
-        adminApi.requestConfessionDeletion(
-          report.confessionId,
-          resolutionNotes || 'Deletion requested via report resolution',
-        ),
+        adminApi
+          .requestConfessionDeletion(
+            report.confessionId,
+            resolutionNotes || 'Deletion requested via report resolution',
+          )
+          .then(async (result) => {
+            await invalidateModerationViews();
+            return result;
+          }),
       successMessage:
         'Deletion request submitted. Another administrator must approve it before the confession is deleted.',
       errorMessage: 'Failed to submit deletion request',
@@ -178,30 +196,46 @@ export default function ReportDetail({
   };
 
   const confirmHide = () => {
-    openConfirmation({
-      title: 'Hide confession?',
-      description:
-        'This will hide the confession from regular users while preserving it for admins.',
-      confirmLabel: 'Hide',
-      variant: 'danger',
-      action: () =>
-        adminApi.hideConfession(
-          report.confessionId,
-          'Hidden via report resolution',
-        ),
-      successMessage: 'Confession hidden successfully',
-      errorMessage: 'Failed to hide confession',
-      onSuccess: () => {
-        onBack();
-      },
+    stepUp.requestStepUp((stepUpToken) => {
+      openConfirmation({
+        title: 'Hide confession?',
+        description:
+          'This will hide the confession from regular users while preserving it for admins.',
+        confirmLabel: 'Hide',
+        variant: 'danger',
+        action: () =>
+          adminApi
+            .hideConfession(
+              report.confessionId,
+              'Hidden via report resolution',
+              stepUpToken,
+            )
+            .then(async (result) => {
+              await invalidateModerationViews();
+              return result;
+            }),
+        successMessage: 'Confession hidden successfully',
+        errorMessage: 'Failed to hide confession',
+        onSuccess: () => {
+          onBack();
+        },
+      });
     });
   };
 
-  const pending = report.status === 'pending';
+  const pending =
+    report.status === 'pending' || report.status === 'reviewing';
 
   return (
     <div className="space-y-6">
       {confirmDialog}
+      <StepUpModal
+        isOpen={stepUp.isModalOpen}
+        onVerify={stepUp.verify}
+        onCancel={stepUp.cancel}
+        error={stepUp.error}
+        isVerifying={stepUp.isVerifying}
+      />
 
       <div className="flex items-center justify-between">
         <button

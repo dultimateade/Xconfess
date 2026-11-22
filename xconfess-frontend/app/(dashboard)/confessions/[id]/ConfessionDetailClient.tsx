@@ -1,7 +1,6 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import ReactMarkdown from "react-markdown";
@@ -24,6 +23,8 @@ import { ReactionButton } from "@/app/components/confession/ReactionButtons";
 import { AnchorButton } from "@/app/components/confession/AnchorButton";
 import { TipButton } from "@/app/components/confession/TipButton";
 import { ShareButton } from "@/app/components/confession/ShareButton";
+import { ContentWarning } from "@/app/components/confession/ContentWarning";
+import { ReportConfessionButton } from "@/app/components/confession/ReportConfessionButton";
 import { CommentSection } from "@/app/components/confession/CommentSection";
 import { RelatedConfessions } from "@/app/components/confession/RelatedConfessions";
 import { formatDate } from "@/app/lib/utils/formatDate";
@@ -31,7 +32,6 @@ import { sanitizeMarkdown } from "@/app/lib/utils/markdown";
 import { queryKeys } from "@/app/lib/api/queryKeys";
 import { useAuth } from "@/app/lib/hooks/useAuth";
 import { getConfessionById } from "@/app/lib/api/confessions";
-import { createConfessionReport } from "@/app/lib/api/reports";
 import { useTranslation } from "@/app/lib/i18n";
 import { getResourceState, RESOURCE_STATE_COPY } from "@/app/lib/resourceState";
 
@@ -44,6 +44,7 @@ interface ConfessionDetailClientProps {
     reactions: { like: number; love: number };
     commentCount?: number;
     isAnchored?: boolean;
+    contentWarning?: boolean;
     stellarTxHash?: string | null;
     anchorStatus?: "confirmed" | "pending" | "not_anchored";
     author?: { id: string; username?: string; avatar?: string | null; stellarAddress?: string };
@@ -58,10 +59,6 @@ export function ConfessionDetailClient({
   const router = useRouter();
   const { user } = useAuth();
   const { t } = useTranslation();
-  const [reportStatus, setReportStatus] = useState<
-    "idle" | "pending" | "success" | "error"
-  >("idle");
-  const [reportError, setReportError] = useState<string | null>(null);
 
   // Core data hook setup modified to catch distinct error streams
   const {
@@ -86,31 +83,6 @@ export function ConfessionDetailClient({
     initialData: initialConfession ?? undefined,
     retry: 1,
   });
-
-  const submitReport = async () => {
-    if (reportStatus === "pending" || reportStatus === "success") return;
-
-    setReportStatus("pending");
-    setReportError(null);
-
-    try {
-      const result = await createConfessionReport(confessionId, {
-        type: "other",
-      });
-
-      if (result.ok) {
-        setReportStatus("success");
-      } else {
-        setReportStatus("error");
-        setReportError(result.error.message);
-      }
-    } catch (err) {
-      setReportStatus("error");
-      setReportError(
-        err instanceof Error ? err.message : "Report submission failed.",
-      );
-    }
-  };
 
   // ==========================================
   // STATE 1: REUSABLE STABLE LAYOUT SKELETON
@@ -339,11 +311,13 @@ export function ConfessionDetailClient({
             </div>
           </CardHeader>
           <CardContent className="pt-0">
-            <div dir="auto" className="prose prose-zinc max-w-none text-zinc-900 dark:prose-invert dark:text-white prose-p:text-lg prose-p:leading-relaxed prose-a:break-all">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {sanitizeMarkdown(confession.content)}
-              </ReactMarkdown>
-            </div>
+            <ContentWarning contentWarning={confession.contentWarning}>
+              <div dir="auto" className="prose prose-zinc max-w-none text-zinc-900 dark:prose-invert dark:text-white prose-p:text-lg prose-p:leading-relaxed prose-a:break-all">
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                  {sanitizeMarkdown(confession.content)}
+                </ReactMarkdown>
+              </div>
+            </ContentWarning>
 
             {/* Reactions + Anchor + Share */}
             <div className="mt-6 pt-6 border-t border-zinc-200 dark:border-zinc-800 flex flex-wrap items-center justify-between gap-4">
@@ -399,39 +373,17 @@ export function ConfessionDetailClient({
 
         {/* Report Section */}
         <div className="mb-8 flex justify-end">
-          <div className="flex flex-col items-end">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="text-zinc-500 hover:text-zinc-400"
-              disabled={
-                reportStatus === "pending" || reportStatus === "success"
-              }
-              onClick={submitReport}
-              aria-label="Report confession"
-            >
-              <AlertCircle className="h-4 w-4 mr-1" />
-              {reportStatus === "pending"
-                ? t("moderation.reporting")
-                : reportStatus === "success"
-                  ? t("moderation.reported")
-                  : t("moderation.reportButton")}
-            </Button>
-
-            {reportStatus === "pending" && (
-              <p className="mt-2 text-xs text-zinc-500">Submitting report…</p>
-            )}
-            {reportStatus === "success" && (
-              <p className="mt-2 text-xs text-emerald-600 dark:text-emerald-400">
-                {t("moderation.reportSuccess")}
-              </p>
-            )}
-            {reportStatus === "error" && (
-              <p className="mt-2 text-xs text-red-600 dark:text-red-400">
-                {reportError || t("moderation.reportFailed")}
-              </p>
-            )}
-          </div>
+          <ReportConfessionButton
+            confessionId={confessionId}
+            className="inline-flex min-h-10 items-center gap-1 rounded-lg px-3 text-sm text-zinc-500 hover:text-zinc-900 dark:hover:text-zinc-100"
+            labels={{
+              idle: t("moderation.reportButton"),
+              pending: t("moderation.reporting"),
+              success: t("moderation.reported"),
+              successMessage: t("moderation.reportSuccess"),
+              failure: t("moderation.reportFailed"),
+            }}
+          />
         </div>
 
         {/* Comments Section Container */}

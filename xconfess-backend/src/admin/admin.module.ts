@@ -17,6 +17,7 @@ import { UserModule } from '../user/user.module';
 import { UserAnonymousUser } from '../user/entities/user-anonymous-link.entity';
 import { WebSocketLogger } from '../websocket/websocket.logger';
 import { WsRolesGuard } from '../auth/guards/ws-roles.guard';
+import { WsJwtGuard } from '../auth/guards/ws-jwt.guard';
 import { Reflector } from '@nestjs/core';
 import { CapabilityPolicyService } from '../auth/capabilities/capability-policy.service';
 import { CapabilityGuard } from '../auth/capabilities/capability.guard';
@@ -80,6 +81,7 @@ import { ModerationAccessGrantGuard } from '../auth/guards/moderation-access-gra
     ReportsEventsListener,
     WebSocketLogger,
     WsRolesGuard,
+    WsJwtGuard,
     Reflector,
     CapabilityPolicyService,
     CapabilityGuard,

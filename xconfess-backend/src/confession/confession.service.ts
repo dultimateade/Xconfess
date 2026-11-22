@@ -505,6 +505,7 @@ export class ConfessionService {
         'confession.isAnchored',
         'confession.stellarTxHash',
         'confession.moderationStatus',
+        'confession.requiresReview',
         'reactions.id',
         'reactions.emoji',
         'reactions.createdAt',
@@ -983,12 +984,32 @@ export class ConfessionService {
     }));
   }
 
+  private toPublicConfession(
+    confession: AnonymousConfession & { contentWarning?: boolean },
+  ) {
+    return {
+      id: confession.id,
+      message: confession.message,
+      gender: confession.gender,
+      created_at: confession.created_at,
+      view_count: confession.view_count,
+      isAnchored: confession.isAnchored,
+      stellarTxHash: confession.stellarTxHash,
+      anonymousUser: confession.anonymousUser,
+      reactions: confession.reactions,
+      contentWarning:
+        confession.contentWarning === true ||
+        confession.requiresReview === true ||
+        confession.moderationStatus === ModerationStatus.FLAGGED,
+    };
+  }
+
   async getConfessionByIdWithViewCount(id: string, req: Request) {
     const singleCacheKey = this.cacheService.buildKey('confession', id);
 
     const cached = await this.cacheService.get<any>(singleCacheKey);
     if (cached) {
-      return cached;
+      return this.toPublicConfession(cached);
     }
 
     const conf = await this.confessionRepo.findOne({
@@ -1007,6 +1028,9 @@ export class ConfessionService {
         created_at: true,
         view_count: true,
         moderationStatus: true,
+        requiresReview: true,
+        isAnchored: true,
+        stellarTxHash: true,
         reactions: {
           id: true,
           emoji: true,
@@ -1037,38 +1061,25 @@ export class ConfessionService {
 
     if (await this.viewCache.checkAndMarkView(id, userOrIp)) {
       await this.confessionRepo.incrementViewCountAtomically(id);
-      const updated = await this.confessionRepo.findOne({
-        where: { id },
-        relations: [
-          'anonymousUser',
-          'anonymousUser.userLinks',
-          'anonymousUser.userLinks.user',
-          'reactions',
-          'reactions.anonymousUser',
-        ],
-      });
-      if (updated) {
-        const updatedAuthor = updated.anonymousUser?.userLinks?.[0]?.user;
-        if (updatedAuthor && !updatedAuthor.shouldShowReactions()) {
-          updated.reactions = [];
-        }
-        updated.message = decryptConfession(updated.message, this.aesKey);
-      }
+      conf.view_count = (conf.view_count ?? 0) + 1;
+      conf.message = decryptConfession(conf.message, this.aesKey);
+      const response = this.toPublicConfession(conf);
       await this.cacheService.set(
         singleCacheKey,
-        updated,
+        response,
         CACHE_TTL.CONFESSION_SINGLE,
       );
-      return updated;
+      return response;
     }
 
     conf.message = decryptConfession(conf.message, this.aesKey);
+    const response = this.toPublicConfession(conf);
     await this.cacheService.set(
       singleCacheKey,
-      conf,
+      response,
       CACHE_TTL.CONFESSION_SINGLE,
     );
-    return conf;
+    return response;
   }
 
   async getTrendingConfessions(window: string = '24h') {
@@ -1138,6 +1149,11 @@ export class ConfessionService {
     confession.requiresReview = false;
 
     const updated = await this.confessionRepo.save(confession);
+    await this.cacheService.del(this.cacheService.buildKey('confession', confessionId));
+    await this.cacheService.invalidateSegment(
+      'confessions',
+      'confession moderation status changed',
+    );
 
     const logs =
       await this.moderationRepoService.getLogsByConfession(confessionId);

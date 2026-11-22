@@ -2,6 +2,7 @@
 
 import { Notification } from "@/app/types/notifications";
 import { Trash2, Check } from "lucide-react";
+import Link from "next/link";
 
 interface NotificationItemProps {
     notification: Notification;
@@ -14,6 +15,8 @@ export function NotificationItem({
     onMarkAsRead,
     onDelete,
 }: NotificationItemProps) {
+    const confessionId = notification.metadata?.confessionId;
+
     return (
         <div
             className={`p-4 flex justify-between gap-3 ${notification.isRead ? "bg-white" : "bg-blue-50"
@@ -24,6 +27,14 @@ export function NotificationItem({
                     {notification.title}
                 </p>
                 <p className="text-xs text-gray-600">{notification.message}</p>
+                {confessionId && (
+                    <Link
+                        href={`/confessions/${confessionId}`}
+                        className="mt-2 inline-flex text-xs font-medium text-indigo-600 underline-offset-2 hover:underline"
+                    >
+                        View confession
+                    </Link>
+                )}
             </div>
 
             <div className="flex items-center gap-2">

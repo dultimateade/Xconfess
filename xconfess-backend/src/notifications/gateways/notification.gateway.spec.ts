@@ -1,4 +1,9 @@
+jest.mock('../../user/user.service', () => ({
+  UserService: class UserService {},
+}));
+
 import { ExecutionContext, UnauthorizedException } from '@nestjs/common';
+import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { JwtService, TokenExpiredError } from '@nestjs/jwt';
 import { Server, Socket } from 'socket.io';
 import { WsJwtGuard } from '../../auth/guards/ws-jwt.guard';
@@ -54,15 +59,22 @@ describe('Notification websocket auth regression coverage', () => {
       logSubscriptionRejected: jest.fn(),
       logSubscriptionGranted: jest.fn(),
     };
+    const jwtService = { verifyAsync: jest.fn() };
+    const userRepository = {
+      findOne: jest.fn().mockResolvedValue({ is_active: true }),
+    };
 
     return {
       gateway: new NotificationGateway(
         notificationService as any,
         configService as any,
-        { verifyAsync: jest.fn() } as any,
+        jwtService as any,
         wsLogger as unknown as WebSocketLogger,
+        userRepository as any,
       ),
       wsLogger,
+      jwtService,
+      userRepository,
     };
   };
 
@@ -128,6 +140,7 @@ describe('Notification websocket auth regression coverage', () => {
     expect(client.data).toEqual({
       userId: 'user-1',
       username: 'alice',
+      wsAuthToken: 'good-token',
       user: {
         id: 1,
         username: 'alice',
@@ -364,5 +377,187 @@ describe('Notification websocket auth regression coverage', () => {
     const headers = client.handshake?.headers as Record<string, string>;
     expect(headers['authorization']).not.toContain('super-secret-jwt');
     expect(headers['cookie']).not.toContain('super-secret-cookie');
+  });
+
+  it('rejects anonymous and expired connections in handshake middleware', async () => {
+    const { gateway, jwtService, userRepository } = createGateway();
+    let middleware:
+      | ((socket: Socket, next: (error?: Error) => void) => void)
+      | undefined;
+    gateway.afterInit({
+      engine: { opts: {} },
+      use: jest.fn((handler) => {
+        middleware = handler;
+      }),
+    } as any);
+    expect(middleware).toBeDefined();
+
+    const anonymous = createSocket();
+    const anonymousError = await new Promise<Error | undefined>((resolve) =>
+      middleware!(anonymous, resolve),
+    );
+    expect(anonymousError).toBeInstanceOf(Error);
+
+    const authenticated = createSocket({
+      handshake: { auth: { token: 'active-token' }, headers: {} } as any,
+    });
+    jwtService.verifyAsync.mockResolvedValue({ sub: '1', username: 'alice' });
+    const authenticatedError = await new Promise<Error | undefined>((resolve) =>
+      middleware!(authenticated, resolve),
+    );
+    expect(authenticatedError).toBeUndefined();
+    expect(authenticated.data.userId).toBe('1');
+    expect(userRepository.findOne).toHaveBeenCalledWith({
+      where: { id: 1 },
+      select: { id: true, is_active: true },
+    });
+
+    const inactive = createSocket({
+      handshake: { auth: { token: 'inactive-token' }, headers: {} } as any,
+    });
+    jwtService.verifyAsync.mockResolvedValue({ sub: '2' });
+    userRepository.findOne.mockResolvedValueOnce({ is_active: false });
+    const inactiveError = await new Promise<Error | undefined>((resolve) =>
+      middleware!(inactive, resolve),
+    );
+    expect(inactiveError).toBeInstanceOf(Error);
+    expect(inactive.data.userId).toBeUndefined();
+
+    const malformedSubject = createSocket({
+      handshake: { auth: { token: 'malformed-subject-token' }, headers: {} } as any,
+    });
+    jwtService.verifyAsync.mockResolvedValue({ sub: '2admin' });
+    const malformedError = await new Promise<Error | undefined>((resolve) =>
+      middleware!(malformedSubject, resolve),
+    );
+    expect(malformedError).toBeInstanceOf(Error);
+    expect(userRepository.findOne).toHaveBeenCalledTimes(2);
+
+    const expired = createSocket({
+      handshake: {
+        auth: { token: 'expired-token' },
+        headers: {},
+      } as any,
+    });
+    jwtService.verifyAsync.mockRejectedValue(
+      new TokenExpiredError('jwt expired', new Date()),
+    );
+    const expiredError = await new Promise<Error | undefined>((resolve) =>
+      middleware!(expired, resolve),
+    );
+    expect(expiredError).toBeInstanceOf(Error);
+    expect(expired.data.userId).toBeUndefined();
+  });
+
+  it('keeps auth refresh callable after the handshake token expires', () => {
+    expect(
+      Reflect.getMetadata(
+        GUARDS_METADATA,
+        NotificationGateway.prototype.handleAuthRefresh,
+      ),
+    ).toBeUndefined();
+    expect(
+      Reflect.getMetadata(
+        GUARDS_METADATA,
+        NotificationGateway.prototype.handleMarkRead,
+      ),
+    ).toContain(WsJwtGuard);
+  });
+
+  it('uses the rotated token for subsequent guarded notification events', async () => {
+    const client = createSocket({
+      handshake: {
+        auth: { token: 'expired-handshake-token' },
+        headers: {},
+      } as any,
+      data: { wsAuthToken: 'refreshed-token' },
+    });
+    const jwtService = { verifyAsync: jest.fn().mockResolvedValue({ sub: '1' }) };
+    const guard = createGuard(jwtService);
+
+    await expect(guard.canActivate(createWsContext(client))).resolves.toBe(true);
+
+    expect(jwtService.verifyAsync).toHaveBeenCalledWith('refreshed-token');
+    expect(client.data.wsAuthToken).toBe('refreshed-token');
+  });
+
+  it('moves a notification socket to the new account on successful refresh', async () => {
+    const { gateway, jwtService } = createGateway();
+    const client = createSocket({ data: { userId: '1' } });
+    gateway.handleConnection(client);
+    jwtService.verifyAsync.mockResolvedValue({
+      sub: '2',
+      username: 'second-user',
+    });
+
+    await gateway.handleAuthRefresh(client, { token: 'new-account-token' });
+
+    expect(client.leave).toHaveBeenCalledWith('user:1');
+    expect(client.join).toHaveBeenCalledWith('user:2');
+    expect(client.data).toMatchObject({
+      userId: '2',
+      username: 'second-user',
+      wsAuthToken: 'new-account-token',
+    });
+    expect((gateway as any).userSockets.has('1')).toBe(false);
+    expect((gateway as any).userSockets.get('2')).toEqual(
+      new Set([client.id]),
+    );
+    expect(client.emit).toHaveBeenCalledWith(
+      'auth:refreshed',
+      expect.objectContaining({ success: true, userId: '2' }),
+    );
+  });
+
+  it('revokes an expired refreshed session and disconnects the socket', async () => {
+    const { gateway, jwtService } = createGateway();
+    const client = createSocket({ data: { userId: 'user-1' } });
+    gateway.handleConnection(client);
+    jwtService.verifyAsync.mockRejectedValue(
+      new TokenExpiredError('jwt expired', new Date()),
+    );
+
+    await gateway.handleAuthRefresh(client, { token: 'expired-token' });
+
+    expect(client.emit).toHaveBeenCalledWith(
+      'auth:revoked',
+      expect.objectContaining({ reason: 'SESSION_REVOKED_OR_EXPIRED' }),
+    );
+    expect(client.disconnect).toHaveBeenCalledWith(true);
+  });
+
+  it('disconnects and clears tracking when refreshed account is inactive', async () => {
+    const { gateway, jwtService, userRepository } = createGateway();
+    const client = createSocket({ data: { userId: '1' } });
+    gateway.handleConnection(client);
+    jwtService.verifyAsync.mockResolvedValue({ sub: '2' });
+    userRepository.findOne.mockResolvedValueOnce({ is_active: false });
+
+    await gateway.handleAuthRefresh(client, { token: 'inactive-account-token' });
+
+    expect(client.emit).toHaveBeenCalledWith(
+      'auth:revoked',
+      expect.objectContaining({ reason: 'SESSION_REVOKED_OR_EXPIRED' }),
+    );
+    expect(client.disconnect).toHaveBeenCalledWith(true);
+    expect((gateway as any).userSockets.has('1')).toBe(false);
+  });
+
+  it('notifies and disconnects every tracked socket when a user is revoked', async () => {
+    const { gateway } = createGateway();
+    const client = createSocket({ data: { userId: 'user-1' } });
+    gateway.server = {
+      sockets: { sockets: new Map([[client.id, client]]) },
+    } as any;
+    gateway.handleConnection(client);
+
+    await expect(gateway.revokeUserSessions('user-1')).resolves.toBe(1);
+
+    expect(client.emit).toHaveBeenCalledWith(
+      'auth:revoked',
+      expect.objectContaining({ reason: 'SESSION_REVOKED' }),
+    );
+    expect(client.disconnect).toHaveBeenCalledWith(true);
+    expect((gateway as any).userSockets.has('user-1')).toBe(false);
   });
 });

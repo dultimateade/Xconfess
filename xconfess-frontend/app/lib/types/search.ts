@@ -8,6 +8,7 @@ export interface SearchConfession {
   author?: { id: string; username?: string; avatar?: string };
   isAnchored?: boolean;
   stellarTxHash?: string | null;
+  contentWarning?: boolean;
 }
 
 export interface SearchFilters {

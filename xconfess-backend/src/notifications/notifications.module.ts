@@ -16,6 +16,7 @@ import {
 import { NotificationGateway } from './gateways/notification.gateway';
 import { DlqAdminController } from './dlq-admin.controller';
 import { WebSocketLogger } from '../websocket/websocket.logger';
+import { WsJwtGuard } from '../auth/guards/ws-jwt.guard';
 import { OutboxDispatcherService } from './services/outbox-dispatcher.service';
 import { RecipientResolver } from './services/recipient-resolver.service';
 import { JobManagementService } from './services/job-management.service';
@@ -73,11 +74,17 @@ const jobsEnabled = process.env.ENABLE_BACKGROUND_JOBS === 'true';
     EmailNotificationService,
     ...(jobsEnabled ? [NotificationProcessor] : []),
     NotificationGateway,
+    WsJwtGuard,
     WebSocketLogger,
     OutboxDispatcherService,
     RecipientResolver,
     JobManagementService,
   ],
-  exports: [NotificationService, RecipientResolver, JobManagementService],
+  exports: [
+    NotificationService,
+    NotificationGateway,
+    RecipientResolver,
+    JobManagementService,
+  ],
 })
 export class NotificationsModule {}

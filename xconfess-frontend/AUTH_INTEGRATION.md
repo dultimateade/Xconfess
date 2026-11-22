@@ -145,3 +145,22 @@ The implementation requires:
 - No refresh token logic yet (can be added later)
 - All API calls use the correct backend endpoints (`/users/*`)
 - Error messages are user-friendly and don't expose internal details
+
+## Cross-tab account changes
+
+When the auth provider completes a login or logout, or processes a terminal
+session check, the frontend sends an opaque account-change signal through
+browser storage (`BroadcastChannel` is the fallback). The signal contains no
+account ID or user data. Other open tabs clear account-scoped browser storage
+and query data, discard their local auth state, and replace the current route
+with `/login`; they do not issue a logout request that could revoke the newly
+established shared session.
+
+Axios API requests capture the active account generation when sent. A response
+arriving after that generation changes is rejected with `ACCOUNT_CHANGED` and
+must not be retried or returned to the calling feature. If both cross-tab
+transport mechanisms are unavailable, the initiating tab still clears local
+state and logs the notification failure; reopening or reloading other tabs is
+required to reconcile them. If browser storage refuses a deletion, the failure
+is logged and the tab still clears in-memory state and navigates to the login
+screen; the user should restore browser storage and reload to retry cleanup.

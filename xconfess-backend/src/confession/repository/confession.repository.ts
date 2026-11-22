@@ -3,12 +3,14 @@ import {
   Repository,
   FindOptionsWhere,
   ILike,
+  In,
   SelectQueryBuilder,
 } from 'typeorm';
 import { Injectable } from '@nestjs/common';
 import { AnonymousConfession } from '../entities/confession.entity';
 import { SearchConfessionDto } from '../dto/search-confession.dto';
 import { decodeCursor, encodeCursor } from '../../common/pagination';
+import { ModerationStatus } from '../../moderation/ai-moderation.service';
 
 /**
  * Repository for handling database operations related to anonymous confessions.
@@ -59,6 +61,10 @@ export class AnonymousConfessionRepository extends Repository<AnonymousConfessio
       .leftJoinAndSelect('userLinks.user', 'user')
       .where('confession.message ILIKE :searchTerm', {
         searchTerm: `%${searchTerm}%`,
+      })
+      .andWhere('confession.isHidden = false')
+      .andWhere('confession.moderationStatus IN (:...statuses)', {
+        statuses: [ModerationStatus.APPROVED, ModerationStatus.PENDING],
       })
       .andWhere(
         "(anonymousUser.userLinks IS NULL OR anonymousUser.userLinks = '{}' OR user.privacy_settings IS NULL OR user.privacy_settings->>'isDiscoverable' = 'true' OR JSON_TYPE(user.privacy_settings, '$.isDiscoverable') IS NULL)",
@@ -136,6 +142,7 @@ export class AnonymousConfessionRepository extends Repository<AnonymousConfessio
         'confession.isAnchored',
         'confession.stellarTxHash',
         'confession.moderationStatus',
+        'confession.requiresReview',
         'reactions.id',
         'reactions.emoji',
         'reactions.createdAt',
@@ -248,6 +255,7 @@ export class AnonymousConfessionRepository extends Repository<AnonymousConfessio
         'confession.isAnchored',
         'confession.stellarTxHash',
         'confession.moderationStatus',
+        'confession.requiresReview',
         'reactions.id',
         'reactions.emoji',
         'reactions.createdAt',
@@ -292,7 +300,7 @@ export class AnonymousConfessionRepository extends Repository<AnonymousConfessio
   }
 
   /**
-   * Find recent confessions with pagination. Excludes soft-deleted confessions.
+   * Find recent public confessions with pagination.
    * @param page The page number (1-based)
    * @param limit The number of items per page
    * @returns Array of confessions for the specified page
@@ -302,7 +310,14 @@ export class AnonymousConfessionRepository extends Repository<AnonymousConfessio
     limit: number = 10,
   ): Promise<AnonymousConfession[]> {
     return this.find({
-      where: { isDeleted: false },
+      where: {
+        isDeleted: false,
+        isHidden: false,
+        moderationStatus: In([
+          ModerationStatus.APPROVED,
+          ModerationStatus.PENDING,
+        ]),
+      },
       order: {
         created_at: 'DESC',
       },
@@ -376,6 +391,7 @@ export class AnonymousConfessionRepository extends Repository<AnonymousConfessio
         'confession.isAnchored',
         'confession.stellarTxHash',
         'confession.moderationStatus',
+        'confession.requiresReview',
         'reactions.id',
         'reactions.emoji',
         'reactions.createdAt',
@@ -392,6 +408,10 @@ export class AnonymousConfessionRepository extends Repository<AnonymousConfessio
       })
       .andWhere('confession.created_at < :endAt', { endAt: resolvedEndAt })
       .andWhere('confession.isDeleted = false')
+      .andWhere('confession.isHidden = false')
+      .andWhere('confession.moderationStatus IN (:...statuses)', {
+        statuses: [ModerationStatus.APPROVED, ModerationStatus.PENDING],
+      })
       .andWhere(
         "(anonymousUser.userLinks IS NULL OR anonymousUser.userLinks = '{}' OR user.privacy_settings IS NULL OR user.privacy_settings->>'isDiscoverable' = 'true' OR JSON_TYPE(user.privacy_settings, '$.isDiscoverable') IS NULL)",
       )
@@ -452,6 +472,7 @@ export class AnonymousConfessionRepository extends Repository<AnonymousConfessio
         'confession.isAnchored',
         'confession.stellarTxHash',
         'confession.moderationStatus',
+        'confession.requiresReview',
         'reactions.id',
         'reactions.emoji',
         'reactions.createdAt',

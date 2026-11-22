@@ -12,8 +12,11 @@ import { Server, Socket } from 'socket.io';
 import { Logger, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import { InjectRepository } from '@nestjs/typeorm';
+import { Repository } from 'typeorm';
 import { WsJwtGuard } from '../../auth/guards/ws-jwt.guard';
 import { NotificationService } from '../services/notification.service';
+import { User } from '../../user/entities/user.entity';
 import { WebSocketLogger } from '../../websocket/websocket.logger';
 import {
   assertPayloadSize,
@@ -32,7 +35,6 @@ const USER_ROOM_PREFIX = 'user:';
   namespace: '/notifications',
   transports: ['websocket', 'polling'],
 })
-@UseGuards(WsJwtGuard)
 export class NotificationGateway
   implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect
 {
@@ -47,6 +49,8 @@ export class NotificationGateway
     private configService: ConfigService,
     private readonly jwtService: JwtService,
     private readonly wsLogger: WebSocketLogger,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
   ) {}
 
   afterInit(server: Server) {
@@ -73,12 +77,17 @@ export class NotificationGateway
           }
 
           const payload: any = await this.jwtService.verifyAsync(token);
-          if (!payload?.sub) {
+          const userId = this.normalizeUserId(payload?.sub);
+          if (!userId) {
+            return next(new Error('Authentication failed'));
+          }
+
+          if (!(await this.isActiveUser(userId))) {
             return next(new Error('Authentication failed'));
           }
 
           socket.data = socket.data || {};
-          socket.data.userId = String(payload.sub);
+          socket.data.userId = userId;
           socket.data.username = payload.username;
           return next();
         } catch {
@@ -101,6 +110,30 @@ export class NotificationGateway
     }
 
     return null;
+  }
+
+  private async isActiveUser(userId: string): Promise<boolean> {
+    const numericUserId = Number(userId);
+    if (!Number.isSafeInteger(numericUserId) || numericUserId <= 0) return false;
+
+    const user = await this.userRepository.findOne({
+      where: { id: numericUserId },
+      select: { id: true, is_active: true },
+    });
+    return user?.is_active === true;
+  }
+
+  private normalizeUserId(candidate: unknown): string | null {
+    if (
+      typeof candidate !== 'number' &&
+      (typeof candidate !== 'string' || !/^\d+$/.test(candidate))
+    ) {
+      return null;
+    }
+
+    const numericUserId = Number(candidate);
+    if (!Number.isSafeInteger(numericUserId) || numericUserId <= 0) return null;
+    return String(numericUserId);
   }
 
   // ─── Connection lifecycle ─────────────────────────────────────────────────
@@ -174,6 +207,7 @@ export class NotificationGateway
    * requested userId matches the authenticated socket owner, preventing
    * any client from subscribing to another user's private channel.
    */
+  @UseGuards(WsJwtGuard)
   @SubscribeMessage('subscribe:user-notifications')
   handleSubscribeUserNotifications(
     @ConnectedSocket() client: Socket,
@@ -217,6 +251,7 @@ export class NotificationGateway
     void this.emitUnreadSync(client, authenticatedUserId);
   }
 
+  @UseGuards(WsJwtGuard)
   @SubscribeMessage('join-notifications')
   handleLegacyJoinNotifications(
     @ConnectedSocket() client: Socket,
@@ -267,6 +302,7 @@ export class NotificationGateway
    * Unsubscribe from the user-notifications channel.
    * The client leaves their private room but the WS connection stays open.
    */
+  @UseGuards(WsJwtGuard)
   @SubscribeMessage('unsubscribe:user-notifications')
   async handleUnsubscribeUserNotifications(@ConnectedSocket() client: Socket) {
     const userId = String(client.data.userId);
@@ -282,6 +318,7 @@ export class NotificationGateway
 
   // ─── Existing message handlers ────────────────────────────────────────────
 
+  @UseGuards(WsJwtGuard)
   @SubscribeMessage('mark-read')
   async handleMarkRead(client: Socket, payload: { notificationId: string }) {
     const userId = client.data.userId;
@@ -301,6 +338,7 @@ export class NotificationGateway
     }
   }
 
+  @UseGuards(WsJwtGuard)
   @SubscribeMessage('mark-all-read')
   async handleMarkAllRead(client: Socket) {
     const userId = client.data.userId;
@@ -317,6 +355,7 @@ export class NotificationGateway
     }
   }
 
+  @UseGuards(WsJwtGuard)
   @SubscribeMessage('get-unread-count')
   async handleGetUnreadCount(client: Socket) {
     const userId = client.data.userId;
@@ -390,11 +429,14 @@ export class NotificationGateway
 
     try {
       const decoded: any = await this.jwtService.verifyAsync(token);
-      if (!decoded?.sub) {
+      const newUserId = this.normalizeUserId(decoded?.sub);
+      if (!newUserId) {
         throw new Error('MISSING_SUBJECT');
       }
 
-      const newUserId = String(decoded.sub);
+      if (!(await this.isActiveUser(newUserId))) {
+        throw new Error('INACTIVE_ACCOUNT');
+      }
 
       // If user identity changed during refresh, migrate socket tracking
       if (oldUserId && oldUserId !== newUserId) {
@@ -409,6 +451,7 @@ export class NotificationGateway
       client.data = client.data || {};
       client.data.userId = newUserId;
       client.data.username = decoded.username;
+      client.data.wsAuthToken = token;
 
       // Re-register in user room
       const newRoom = `${USER_ROOM_PREFIX}${newUserId}`;
@@ -428,6 +471,11 @@ export class NotificationGateway
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       this.logger.warn(`Auth refresh failed on socket ${client.id}: ${message}`);
+      if (oldUserId) {
+        const oldSet = this.userSockets.get(oldUserId);
+        oldSet?.delete(client.id);
+        if (oldSet?.size === 0) this.userSockets.delete(oldUserId);
+      }
       client.emit('auth:revoked', {
         reason: 'SESSION_REVOKED_OR_EXPIRED',
         timestamp: new Date().toISOString(),

@@ -72,6 +72,7 @@ export class WsJwtGuard implements CanActivate {
 
       // Attach useful user info to the socket for downstream handlers
       client.data = client.data || {};
+      client.data.wsAuthToken = token;
       client.data.userId = payload.sub;
       client.data.username = payload.username;
 
@@ -139,6 +140,12 @@ export class WsJwtGuard implements CanActivate {
   }
 
   private extractToken(client: Socket): string | null {
+    const refreshedToken = client.data?.wsAuthToken;
+    if (typeof refreshedToken === 'string' && refreshedToken.trim()) {
+      this.scrubSensitiveHeaders(client);
+      return refreshedToken.trim();
+    }
+
     // 1) Prefer handshake.auth.token (socket.io client can send via auth)
     const auth = client.handshake?.auth as any;
     if (auth && typeof auth.token === 'string' && auth.token.trim()) {

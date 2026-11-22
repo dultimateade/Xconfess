@@ -3,6 +3,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SearchConfession, SearchFilters } from "@/app/lib/types/search";
 import { logError } from "@/app/lib/utils/errorHandler";
+import {
+  normalizeConfession,
+  type RawConfession,
+} from "@/app/lib/utils/normalizeConfession";
 
 const SEARCH_MAX_RETRIES = 3;
 const SEARCH_BASE_DELAY_MS = 400;
@@ -102,6 +106,28 @@ function userMessageForSearchFailure(status: number | null): string {
     return "You need to be signed in to search.";
   }
   return "Search couldn't be completed. Please try again.";
+}
+
+function normalizeSearchConfession(value: unknown): SearchConfession | null {
+  if (typeof value !== "object" || value === null) return null;
+  const confession = normalizeConfession(value as RawConfession);
+  if (!confession.id) return null;
+
+  return {
+    id: confession.id,
+    content: confession.content,
+    createdAt: confession.createdAt,
+    reactions: {
+      like: confession.reactions.like ?? 0,
+      love: confession.reactions.love ?? 0,
+    },
+    commentCount: confession.commentCount,
+    viewCount: confession.viewCount,
+    author: confession.author,
+    isAnchored: confession.isAnchored,
+    stellarTxHash: confession.stellarTxHash,
+    contentWarning: confession.contentWarning,
+  };
 }
 
 async function fetchSearchWithRetry(
@@ -265,9 +291,14 @@ export function useSearch({
 
         if (cancelled) return;
 
-        const list = data.confessions ?? [];
-        const totalCount = (data.total as number) ?? 0;
-        const more = data.hasMore === true;
+        const meta = data.meta as Record<string, unknown> | undefined;
+        const list = data.confessions ?? data.data ?? [];
+        const totalCount =
+          (typeof data.total === "number" ? data.total : undefined) ??
+          (typeof meta?.total === "number" ? meta.total : 0);
+        const more =
+          data.hasMore === true ||
+          totalCount > page * (typeof data.limit === "number" ? data.limit : 10);
         const warnings = Array.isArray(data.warnings)
           ? data.warnings.filter(
               (entry: unknown) =>
@@ -280,13 +311,18 @@ export function useSearch({
           typeof data.message === "string" && data.message.trim().length > 0
             ? data.message
             : null;
-        const meta = data.meta as Record<string, unknown> | undefined;
         const searchType =
           meta && typeof meta.searchType === "string"
             ? meta.searchType
             : undefined;
 
-        const confessionList = list as SearchConfession[];
+        const confessionList = Array.isArray(list)
+          ? list
+              .map(normalizeSearchConfession)
+              .filter((confession): confession is SearchConfession =>
+                Boolean(confession),
+              )
+          : [];
 
         if (append) {
           accumulatedRef.current = [

@@ -26,6 +26,18 @@ jest.mock('@/app/lib/api/admin', () => ({
   },
 }));
 
+jest.mock('@/app/hooks/useStepUp', () => ({
+  useStepUp: () => ({
+    isModalOpen: false,
+    requestStepUp: (onVerified: (token: string) => void) =>
+      onVerified('step-up-token'),
+    verify: jest.fn(),
+    cancel: jest.fn(),
+    error: null,
+    isVerifying: false,
+  }),
+}));
+
 jest.mock('@/app/components/admin/ReportModerationTimeline', () => ({
   ReportModerationTimeline: () => null,
   buildReportModerationTimeline: () => [],
@@ -312,4 +324,32 @@ describe('ReportDetail — dialog cancel', () => {
     expect(screen.queryByText('Resolve report?')).not.toBeInTheDocument();
     expect(adminApi.resolveReport).not.toHaveBeenCalled();
   });
+});
+
+describe('ReportDetail — moderation actions', () => {
+  it('keeps finalization actions available while a report is under review', () => {
+    renderDetail({ report: { ...mockReport, status: 'reviewing' } });
+
+    expect(screen.getByRole('button', { name: /resolve report/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /dismiss report/i })).toBeInTheDocument();
+  });
+
+  it('requires step-up proof before hiding and invalidates affected views', async () => {
+    (adminApi.hideConfession as jest.Mock).mockResolvedValue({});
+    const user = userEvent.setup();
+    const { onBack } = renderDetail();
+
+    await user.click(screen.getByRole('button', { name: /hide confession/i }));
+    await user.click(screen.getByRole('button', { name: /^hide$/i }));
+
+    await waitFor(() => {
+      expect(adminApi.hideConfession).toHaveBeenCalledWith(
+        'confession-1',
+        'Hidden via report resolution',
+        'step-up-token',
+      );
+      expect(onBack).toHaveBeenCalled();
+    });
+  });
+
 });

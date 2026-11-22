@@ -1,5 +1,10 @@
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
+
+const {
+  validateCommittedManifests,
+} = require('../../../scripts/validate-deployment-manifests');
 
 /**
  * Deploy Boundary Matrix Compatibility Test Suite (Issue #110)
@@ -156,11 +161,42 @@ describe('Contract Deploy Boundaries Integration Matrix (Issue #110)', () => {
     it('should verify contract-abi-manifest.json contains required entrypoints', () => {
       const abiManifestPath = path.join(deploymentsDir, 'contract-abi-manifest.json');
       expect(fs.existsSync(abiManifestPath)).toBe(true);
-
       const abiManifest = JSON.parse(fs.readFileSync(abiManifestPath, 'utf-8'));
       expect(abiManifest.contracts).toBeDefined();
       expect(abiManifest.contracts['anonymous-tipping']).toBeDefined();
       expect(abiManifest.contracts['anonymous-tipping'].version).toBe('1.0.0');
+    });
+
+    it('should validate all committed deployment metadata and ABI digests', () => {
+      const result = validateCommittedManifests();
+      expect(result.valid).toBe(true);
+      expect(result.errors).toEqual([]);
+    });
+
+    it('should fail closed for mismatched contract IDs and invalid fixture digests', () => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xconfess-manifest-'));
+      try {
+        fs.cpSync(deploymentsDir, path.join(tempRoot, 'deployments'), {
+          recursive: true,
+        });
+        fs.cpSync(path.resolve(deploymentsDir, '../xconfess-contracts'), path.join(tempRoot, 'xconfess-contracts'), {
+          recursive: true,
+        });
+        const snapshotPath = path.join(tempRoot, 'deployments', 'fixtures', 'contract-deployment-snapshots.json');
+        const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+        snapshot.contracts['confession-anchor'].contract_id = 'INVALID';
+        snapshot.contracts['anonymous-tipping'].sha256 = 'not-a-digest';
+        fs.writeFileSync(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`);
+
+        const result = validateCommittedManifests({ root: tempRoot });
+        expect(result.valid).toBe(false);
+        expect(result.errors).toEqual(expect.arrayContaining([
+          expect.stringContaining('confession-anchor: invalid contract_id'),
+          expect.stringContaining('fixture snapshot anonymous-tipping sha256'),
+        ]));
+      } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
     });
   });
 
