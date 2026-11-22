@@ -64,6 +64,10 @@ const EVENT_SCHEMAS: readonly EventSchema[] = [
     fieldOrder: ['actor', 'paused', 'reason', 'timestamp'],
   },
   {
+    eventName: 'PauseAuditEvent', category: 'pause', topic: 'pause_audit', eventVersion: 1,
+    fieldOrder: ['event_version', 'paused', 'actor', 'reason', 'ledger_sequence', 'ledger_timestamp'],
+  },
+  {
     eventName: 'ReportEvent', category: 'report', topic: 'report', eventVersion: 1,
     fieldOrder: ['event_version', 'confession_id', 'reporter', 'reason', 'nonce', 'timestamp', 'correlation_id'],
   },

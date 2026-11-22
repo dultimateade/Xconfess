@@ -134,6 +134,9 @@ pub enum DataKey {
 }
 ```
 
+The shared emergency-pause module stores `Paused` and the additive `LastPause`
+and `LastResume` records in the same instance storage.
+
 ### Capabilities
 
 | Capability | Symbol | Description |
@@ -313,6 +316,7 @@ Pause the contract (owner/admin only). Blocks `anchor_confession` writes while p
 **Errors:**
 - `NotAuthorized` (code 2) when `caller` is not owner/admin
 - `AlreadyPaused` (code 9) when the contract is already paused
+- `PauseReasonTooLong` (code 16) when `reason` exceeds 128 bytes
 - `ContractPaused` (code 12) is emitted by blocked write paths such as `anchor_confession` while paused
 
 ---
@@ -328,6 +332,22 @@ Unpause the contract (owner/admin only). After a successful unpause, `anchor_con
 **Errors:**
 - `NotAuthorized` (code 2) when `caller` is not owner/admin
 - `NotPaused` (code 10) when the contract is not currently paused
+- `PauseReasonTooLong` (code 16) when `reason` exceeds 128 bytes
+
+The pause and resume reason is public on Stellar. Do not include personal,
+confidential, or secret information. Failed authorization, invalid state
+transitions, or invalid reasons leave the pause state, stored audit records,
+and event stream unchanged.
+
+#### `get_pause_audit(env) -> Vec<PauseAuditRecord>`
+
+Returns zero to two records: the most recent pause and most recent resume,
+ordered pause first and resume second. Each `PauseAuditRecord` contains
+`paused: bool`, `actor: Address`, `reason: String`, `ledger_sequence: u32`,
+and `ledger_timestamp: u64`. Records that have not yet been created are
+omitted. The append-only `pause_audit` event provides the complete historical sequence.
+Existing `paused` and `unpaused` events remain unchanged for client
+compatibility.
 
 ---
 
@@ -416,6 +436,7 @@ Unpause the contract (owner/admin only). After a successful unpause, `anchor_con
 | 13 | `AlreadyOperator` | 13 | Address is already an operator |
 | 14 | `NotOperator` | 14 | Caller is not an operator |
 | 15 | `IncompatibleUpgrade` | 15 | Upgrade version incompatible |
+| 16 | `PauseReasonTooLong` | 16 | Pause or resume reason exceeds 128 bytes |
 
 ---
 
@@ -617,6 +638,21 @@ Soft-delete a confession (set status to Deleted).
 | `gov_approve` | `(env, approver, id)` | Approve proposal |
 | `gov_revoke` | `(env, actor, id)` | Revoke approval |
 | `gov_execute` | `(env, executor, id)` | Execute approved action |
+
+`CriticalAction::PauseWithReason(reason)` and
+`CriticalAction::UnpauseWithReason(reason)` are additive governance variants
+for supplying an explicit transition reason. The existing `Pause` and
+`Unpause` variants remain valid and record the fixed reasons
+`governance pause` and `governance unpause`. Reasons are public on-chain and
+limited to 128 bytes; invalid reason lengths abort execution without applying
+the transition.
+
+`get_pause_audit(env)` returns zero to two latest successful pause and resume
+records, ordered pause first and resume second. Each `PauseAuditRecord`
+contains `paused: bool`, `actor: Address`, `reason: String`,
+`ledger_sequence: u32`, and `ledger_timestamp: u64`. Existing registry
+deployments do not require a storage migration; their audit history is initially
+empty.
 
 ### Events
 
@@ -1249,6 +1285,7 @@ orders against this reference. Keep this section aligned with
 | `ConfessionEvent` | `confession` | `confess` | `single-value` | `event_version`, `confession_id`, `author`, `content_hash`, `nonce`, `timestamp`, `correlation_id` |
 | `ReactionEvent` | `reaction` | `react` | `single-value` | `event_version`, `confession_id`, `reactor`, `reaction_type`, `nonce`, `timestamp`, `correlation_id` |
 | `PauseChangedEvent` | `pause` | `tip_pause` | `single-value` | `actor`, `paused`, `reason`, `timestamp` |
+| `PauseAuditEvent` | `pause` | `pause_audit` | `vec` | `event_version`, `paused`, `actor`, `reason`, `ledger_sequence`, `ledger_timestamp` |
 | `ReportEvent` | `report` | `report` | `single-value` | `event_version`, `confession_id`, `reporter`, `reason`, `nonce`, `timestamp`, `correlation_id` |
 | `ReportSubmittedLedgerEvent` | `report` | `report` | `single-value` | `confession_id`, `actor`, `reason`, `event_version`, `nonce`, `timestamp` |
 | `RoleEvent` | `role` | `role` | `single-value` | `event_version`, `user`, `role`, `granted`, `nonce`, `timestamp`, `correlation_id` |

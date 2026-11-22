@@ -3,13 +3,9 @@
 const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const SUPPORTED = require('./supported-service-versions');
 
 const ROOT = path.resolve(__dirname, '..');
-const SUPPORTED = {
-  node: 22,
-  postgres: 16,
-  redis: 7,
-};
 
 const HIGH_RISK_AREAS = [
   ['backend source', 'backend/src/'],

@@ -17,6 +17,7 @@ pub const REGISTRY_PAYLOAD_TOO_LONG: &str = "registry payload too long";
 mod access_control;
 #[path = "../../emergency_pause/mod.rs"]
 mod emergency_pause;
+pub use emergency_pause::PauseAuditRecord;
 #[path = "../../error.rs"]
 mod error;
 #[path = "../../events.rs"]
@@ -192,6 +193,10 @@ impl ConfessionRegistry {
 
         // Also initialize common access control
         access_control::init_owner(&env, &admin).expect("owner initialization failed");
+    }
+
+    pub fn get_pause_audit(env: Env) -> soroban_sdk::Vec<PauseAuditRecord> {
+        emergency_pause::get_pause_audit(&env)
     }
 
     // ─── Governance ───

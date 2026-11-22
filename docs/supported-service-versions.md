@@ -22,9 +22,15 @@ the deployment declarations together when changing a supported major.
 - Render runs `scripts/check-node-version.js` before dependency installation so
   an unsupported Node.js major fails before the application build.
 - The Render-managed Redis service does not declare its engine major in
-  `render.yaml`. Verify that the selected managed service reports Redis 7 before
-  rollout; deployment preflight cannot infer a provider-side version that is
-  not present in repository configuration.
+  `render.yaml`. `DEPLOY_REDIS_MAJOR_VERSION=7` is an expected-version
+  declaration consumed by the release compatibility gate, not a version
+  reported by the provider. Verify the selected managed service actually
+  reports Redis 7 before rollout; the gate does not connect to production.
+- Deployment environment files must declare
+  `DEPLOY_NODE_MAJOR_VERSION=22`, `DEPLOY_POSTGRES_MAJOR_VERSION=16`, and
+  `DEPLOY_REDIS_MAJOR_VERSION=7`. These declarations are compared with this
+  supported set before release; deployment owners remain responsible for
+  keeping them aligned with the actual managed service configuration.
 - Do not upgrade a service image or deployment major independently. Update this
   matrix, all affected declarations, and any compatibility or migration notes
   in the same change.

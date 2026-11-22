@@ -51,6 +51,11 @@ export const CONTRACT_EVENT_FIXTURES: ContractEventFixture[] = [
     description: 'Tipping contract paused',
   },
   {
+    eventName: 'PauseAuditEvent', category: 'pause', topic: 'pause_audit', eventVersion: 1,
+    values: [1, false, ADDR_B, 'recovery_verified', 12346, 1_700_000_000_006],
+    description: 'Contract resumed with actor and ledger context',
+  },
+  {
     eventName: 'ReportEvent', category: 'report', topic: 'report', eventVersion: 1,
     values: [1, 42, ADDR_B, 'spam', 1, 1_700_000_000_010, 'corr1234'],
     description: 'Confession reported for spam',

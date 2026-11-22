@@ -63,6 +63,22 @@ describe('parseContractEvent — fixture coverage', () => {
       timestamp: fixture.values[6],
     });
   });
+
+  it('decodes pause audit actor, reason, and ledger context', () => {
+    const fixture = CONTRACT_EVENT_FIXTURES.find(
+      (f) => f.eventName === 'PauseAuditEvent',
+    )!;
+    const parsed = parseContractEvent(fixture);
+
+    expect(parsed.fields).toEqual({
+      event_version: 1,
+      paused: false,
+      actor: fixture.values[2],
+      reason: 'recovery_verified',
+      ledger_sequence: 12346,
+      ledger_timestamp: 1_700_000_000_006,
+    });
+  });
 });
 
 describe('parseContractEvent — fixture/registry parity', () => {

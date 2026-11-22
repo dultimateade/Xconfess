@@ -10,6 +10,8 @@ const { createReport, outputPathFor, parseArgs, validateManifests } = require('.
 
 const artifactContent = 'release wasm bytes';
 const digest = crypto.createHash('sha256').update(artifactContent).digest('hex');
+const abiContent = '{"version":"1.0.0","functions":[]}\n';
+const abiDigest = crypto.createHash('sha256').update(abiContent).digest('hex');
 const abiManifest = {
   contracts: {
     alpha: {
@@ -21,7 +23,7 @@ const abiManifest = {
 };
 const wasmManifest = {
   contracts: {
-    alpha: { version: '1.0.0', sha256: digest, abi_sha256: digest, wasm_file: 'target/release/alpha.wasm' },
+    alpha: { version: '1.0.0', sha256: digest, abi_sha256: abiDigest, wasm_file: 'target/release/alpha.wasm' },
   },
 };
 const migrationManifest = {
@@ -43,6 +45,9 @@ test('dry-run report includes the target, digests, migration and pending approva
     const artifactPath = path.join(root, 'xconfess-contracts', 'target', 'release', 'alpha.wasm');
     fs.mkdirSync(path.dirname(artifactPath), { recursive: true });
     fs.writeFileSync(artifactPath, artifactContent);
+    const abiPath = path.join(root, 'xconfess-contracts', 'contracts', 'alpha', 'abi.json');
+    fs.mkdirSync(path.dirname(abiPath), { recursive: true });
+    fs.writeFileSync(abiPath, abiContent);
     const report = createReport({
       network: 'testnet',
       abiManifest,
@@ -137,6 +142,28 @@ test('blocks a candidate whose local artifact digest differs from its manifest',
       root,
     });
     assert.equal(report.candidate.contracts[0].wasm.verification, 'mismatch');
+    assert.equal(report.status, 'blocked');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('blocks a candidate whose ABI artifact digest differs from its manifest', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-plan-test-'));
+  try {
+    const abiPath = path.join(root, 'xconfess-contracts', 'contracts', 'alpha', 'abi.json');
+    fs.mkdirSync(path.dirname(abiPath), { recursive: true });
+    fs.writeFileSync(abiPath, '{"version":"1.0.0","functions":["tampered"]}\n');
+    const report = createReport({
+      network: 'testnet',
+      abiManifest,
+      wasmManifest,
+      migrationManifest,
+      deployment: { contracts: { alpha: { version: '0.9.0' } } },
+      commit: 'abc123',
+      root,
+    });
+    assert.equal(report.candidate.contracts[0].abi.verification, 'mismatch');
     assert.equal(report.status, 'blocked');
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

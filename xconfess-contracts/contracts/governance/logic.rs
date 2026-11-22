@@ -1,4 +1,4 @@
-use soroban_sdk::{Address, Env, Vec};
+use soroban_sdk::{Address, Env, String, Vec};
 
 use super::events::*;
 use super::model::{CriticalAction, GovernanceConfig, Proposal};
@@ -159,10 +159,30 @@ pub fn execute(e: &Env, executor: Address, id: u64) {
                 .unwrap_or_else(|err| panic!("{}", err as u32));
         }
         CriticalAction::Pause => {
-            emergency_pause::set_paused_internal(e, true);
+            emergency_pause::set_paused_internal(
+                e,
+                true,
+                &executor,
+                String::from_str(e, "governance pause"),
+            )
+            .unwrap_or_else(|err| panic!("{}", err as u32));
         }
         CriticalAction::Unpause => {
-            emergency_pause::set_paused_internal(e, false);
+            emergency_pause::set_paused_internal(
+                e,
+                false,
+                &executor,
+                String::from_str(e, "governance unpause"),
+            )
+            .unwrap_or_else(|err| panic!("{}", err as u32));
+        }
+        CriticalAction::PauseWithReason(reason) => {
+            emergency_pause::set_paused_internal(e, true, &executor, reason)
+                .unwrap_or_else(|err| panic!("{}", err as u32));
+        }
+        CriticalAction::UnpauseWithReason(reason) => {
+            emergency_pause::set_paused_internal(e, false, &executor, reason)
+                .unwrap_or_else(|err| panic!("{}", err as u32));
         }
     }
 

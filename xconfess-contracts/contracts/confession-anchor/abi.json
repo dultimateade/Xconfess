@@ -13,6 +13,7 @@
     "get_event_schema_version",
     "get_error_registry_version",
     "get_operator_count",
+    "get_pause_audit",
     "get_owner",
     "get_upgrade_policy",
     "get_version",

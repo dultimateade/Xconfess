@@ -76,6 +76,49 @@ fn anchor_unauthorized_caller_cannot_pause() {
         client.try_pause(&outsider, &reason).is_err(),
         "anchor: non-owner/non-admin must not be able to pause"
     );
+}
+
+#[test]
+fn anchor_pause_and_resume_store_public_audit_context_and_emit_versioned_events() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ConfessionAnchor, ());
+    let client = ConfessionAnchorClient::new(&env, &contract_id);
+    let owner = Address::generate(&env);
+    client.initialize(&owner);
+
+    let empty_audit = client.get_pause_audit();
+    assert!(empty_audit.is_empty());
+
+    let pause_reason = SorobanString::from_str(&env, "incident response");
+    client.pause(&owner, &pause_reason);
+    let pause_audit = client.get_pause_audit();
+    assert_eq!(pause_audit.len(), 1);
+    let pause = pause_audit.get(0).expect("pause audit record");
+    assert!(pause.paused);
+    assert_eq!(pause.actor, owner);
+    assert_eq!(pause.reason, pause_reason);
+    assert_eq!(pause.ledger_sequence, env.ledger().sequence());
+    assert_eq!(pause.ledger_timestamp, env.ledger().timestamp());
+
+    assert_eq!(
+        client.try_pause(&owner, &SorobanString::from_str(&env, "duplicate")),
+        Err(Ok(confession_anchor::Error::AlreadyPaused))
+    );
+    assert_eq!(client.get_pause_audit().get(0), Some(pause.clone()));
+
+    let resume_reason = SorobanString::from_str(&env, "recovery verified");
+    client.unpause(&owner, &resume_reason);
+    let resumed_audit = client.get_pause_audit();
+    assert_eq!(resumed_audit.len(), 2);
+    assert_eq!(resumed_audit.get(0), Some(pause));
+    let resume = resumed_audit.get(1).expect("resume audit record");
+    assert!(!resume.paused);
+    assert_eq!(resume.actor, owner);
+    assert_eq!(resume.reason, resume_reason);
+    assert_eq!(resume.ledger_sequence, env.ledger().sequence());
+    assert_eq!(resume.ledger_timestamp, env.ledger().timestamp());
     assert!(!client.is_paused());
 }
 
@@ -228,6 +271,48 @@ fn registry_governance_pause_blocks_create_confession_and_execute_can_unpause() 
 
     let id = client.create_confession(&author, &hash, &2_000u64);
     assert_eq!(id, 1, "registry: writes must resume after unpause");
+}
+
+#[test]
+fn registry_governance_reasoned_pause_records_executor_and_ledger_context() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let contract_id = env.register(ConfessionRegistry, ());
+    let client = ConfessionRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let reason = SorobanString::from_str(&env, "incident contained");
+    let pause_id = client.gov_propose(&admin, &CriticalAction::PauseWithReason(reason.clone()));
+    client.gov_approve(&admin, &pause_id);
+    client.gov_execute(&admin, &pause_id);
+
+    let pause_record = client
+        .get_pause_audit()
+        .get(0)
+        .expect("governance pause audit record");
+    assert!(pause_record.paused);
+    assert_eq!(pause_record.actor, admin);
+    assert_eq!(pause_record.reason, reason);
+    assert_eq!(pause_record.ledger_sequence, env.ledger().sequence());
+    assert_eq!(pause_record.ledger_timestamp, env.ledger().timestamp());
+
+    let resume_reason = SorobanString::from_str(&env, "recovery verified");
+    let resume_id = client.gov_propose(
+        &admin,
+        &CriticalAction::UnpauseWithReason(resume_reason.clone()),
+    );
+    client.gov_approve(&admin, &resume_id);
+    client.gov_execute(&admin, &resume_id);
+
+    let audit = client.get_pause_audit();
+    assert_eq!(audit.len(), 2);
+    assert_eq!(audit.get(0), Some(pause_record));
+    let resume_record = audit.get(1).expect("governance resume audit record");
+    assert!(!resume_record.paused);
+    assert_eq!(resume_record.actor, admin);
+    assert_eq!(resume_record.reason, resume_reason);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

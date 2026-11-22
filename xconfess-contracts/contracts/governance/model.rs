@@ -8,6 +8,8 @@ pub enum CriticalAction {
     TransferOwnership(Address),
     Pause,
     Unpause,
+    PauseWithReason(soroban_sdk::String),
+    UnpauseWithReason(soroban_sdk::String),
 }
 
 #[contracttype]

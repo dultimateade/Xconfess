@@ -1,4 +1,4 @@
-use soroban_sdk::contracttype;
+use soroban_sdk::{contracttype, Address, String};
 
 /// Current storage layout version for the emergency_pause contract.
 ///
@@ -29,4 +29,16 @@ pub const MIGRATION_REQUIREMENT: MigrationRequirement = MigrationRequirement::No
 pub enum DataKey {
     Admin,
     Paused,
+    LastPause,
+    LastResume,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[contracttype]
+pub struct PauseAuditRecord {
+    pub paused: bool,
+    pub actor: Address,
+    pub reason: String,
+    pub ledger_sequence: u32,
+    pub ledger_timestamp: u64,
 }

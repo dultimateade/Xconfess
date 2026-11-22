@@ -5,7 +5,7 @@ services:
     plan: free
     region: oregon
     branch: main
-    buildCommand: node scripts/check-node-version.js && npm ci --include=dev --include=optional --no-audit --no-fund && npm run deploy:preflight && npm run build --workspace=xconfess-backend
+    buildCommand: node scripts/check-node-version.js && npm ci --include=dev --include=optional --no-audit --no-fund && npm run deploy:preflight && node scripts/release-compatibility.js --deployment --skip-drift-checks && npm run build --workspace=xconfess-backend
     startCommand: npm run render:prestart && npm run start:prod --workspace=xconfess-backend
     healthCheckPath: /api/health/live
     autoDeploy: true
@@ -38,6 +38,12 @@ services:
         value: true
       - key: TYPEORM_LOGGING
         value: false
+      - key: DEPLOY_NODE_MAJOR_VERSION
+        value: 22
+      - key: DEPLOY_POSTGRES_MAJOR_VERSION
+        value: 16
+      - key: DEPLOY_REDIS_MAJOR_VERSION
+        value: 7
       - key: DB_HOST
         fromDatabase:
           name: xconfess-postgres
@@ -82,8 +88,8 @@ services:
         value: true
       - key: STELLAR_NETWORK
         value: testnet
-      - key: OUTBOUND_ALLOWED_ORIGINS
-        value: https://horizon-testnet.stellar.org,https://horizon.stellar.org,https://soroban-rpc-testnet.stellar.org,https://soroban-rpc.mainnet.stellar.org,https://api.openai.com,https://commentanalyzer.googleapis.com
+      - key: STELLAR_CONTRACT_NETWORK
+        value: testnet
       - key: STELLAR_HORIZON_URL
         value: https://horizon-testnet.stellar.org
       - key: STELLAR_SOROBAN_RPC_URL

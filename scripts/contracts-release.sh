@@ -219,6 +219,7 @@ write_manifest() {
 
   {
     printf '{\n'
+    printf '  "schema_version": 2,\n'
     printf '  "contracts": {\n'
 
     local idx=0
@@ -228,15 +229,22 @@ write_manifest() {
       wasm_name="$(crate_to_wasm_name "$crate")"
       local wasm_path="$TARGET_DIR/$wasm_name"
       local cargo_toml="$CONTRACTS_DIR/contracts/$crate/Cargo.toml"
+      local abi_path="$CONTRACTS_DIR/contracts/$crate/abi.json"
       local version
       version="$(sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$cargo_toml" | head -n 1)"
       if [[ -z "$version" ]]; then
         echo "No version found in $cargo_toml" >&2
         exit 1
       fi
+      if [[ ! -f "$abi_path" ]]; then
+        echo "Missing ABI artifact: $abi_path" >&2
+        exit 1
+      fi
 
       local sha256
       sha256="$(sha256sum "$wasm_path" | awk '{print $1}')"
+      local abi_sha256
+      abi_sha256="$(sha256sum "$abi_path" | awk '{print $1}')"
       local bytes
       bytes="$(wc -c < "$wasm_path" | tr -d '[:space:]')"
       local wasm_file="target/$TARGET_TRIPLE/release/$wasm_name"
@@ -244,6 +252,7 @@ write_manifest() {
       printf '    "%s": {\n' "$crate"
       printf '      "bytes": %s,\n' "$bytes"
       printf '      "sha256": "%s",\n' "$sha256"
+      printf '      "abi_sha256": "%s",\n' "$abi_sha256"
       printf '      "version": "%s",\n' "$version"
       printf '      "wasm_file": "%s"\n' "$wasm_file"
       if [[ $idx -lt $((count - 1)) ]]; then
@@ -334,10 +343,24 @@ deploy_all() {
     exit 1
   fi
 
+  local node_bin
+  node_bin="$(resolve_cmd node)" || {
+    echo "Missing required command: node" >&2
+    exit 1
+  }
+  local revision
+  revision="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+  local release_manifest="$REPO_ROOT/deployments/contract-release-manifest-${network}-${revision}.json"
+  "$node_bin" "$REPO_ROOT/scripts/contract-release-manifest.js" create \
+    --network "$network" --manifest "$release_manifest"
+  "$node_bin" "$REPO_ROOT/scripts/contract-release-manifest.js" verify \
+    --network "$network" --manifest "$release_manifest"
+
   local generated_at
   generated_at="$(timestamp_utc)"
   local ids_file
   ids_file="$(mktemp)"
+  trap 'rm -f "$ids_file"' EXIT
 
   for crate in "${CONTRACT_CRATES[@]}"; do
     local wasm_file
@@ -352,7 +375,7 @@ deploy_all() {
   done
 
   local output_file="$REPO_ROOT/deployments/${network}.json"
-  "$PYTHON_BIN" - "$CONTRACTS_DIR" "$TARGET_DIR" "$output_file" "$generated_at" "$network" "$source_key" "$ids_file" "${CONTRACT_CRATES[@]}" <<'PY'
+  "$PYTHON_BIN" - "$CONTRACTS_DIR" "$TARGET_DIR" "$output_file" "$generated_at" "$network" "$source_key" "$ids_file" "$release_manifest" "$revision" "${CONTRACT_CRATES[@]}" <<'PY'
 import hashlib
 import json
 import pathlib
@@ -366,7 +389,9 @@ generated_at = sys.argv[4]
 network = sys.argv[5]
 source_key = sys.argv[6]
 ids_file = pathlib.Path(sys.argv[7])
-crates = sys.argv[8:]
+release_manifest = pathlib.Path(sys.argv[8])
+source_revision = sys.argv[9]
+crates = sys.argv[10:]
 
 ids = {}
 for line in ids_file.read_text(encoding="utf-8").splitlines():
@@ -398,6 +423,11 @@ payload = {
     "generated_at_utc": generated_at,
     "network": network,
     "target": target_dir.parent.name,
+    "release_manifest": {
+        "path": str(release_manifest.relative_to(contracts_dir.parent)),
+        "sha256": hashlib.sha256(release_manifest.read_bytes()).hexdigest(),
+        "source_revision": source_revision,
+    },
     "contracts": contracts,
 }
 

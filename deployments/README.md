@@ -31,49 +31,46 @@ team uses `public` as the Stellar CLI alias for mainnet, commit
 `deployments/public.json`. If the team explicitly configures a `mainnet` alias,
 commit `deployments/mainnet.json` and mention the alias in the release notes.
 
-## Manifest Verification
+## Signed Contract Release Manifest
 
-Deployment manifests are cryptographically verifiable. Each manifest records
-the exact network and build it was produced from, the checksums of every
-referenced artifact, and the provenance of the signer that produced it. A
-manifest whose artifact checksum does not match the on-disk artifact, or whose
-network/environment metadata is incompatible with the consumer, must be
-rejected.
+`contract-release-manifest-<network>-<revision>.json` binds each release's
+WASM SHA-256, ABI SHA-256 and version, full source revision, and network alias,
+network id, environment, and Stellar passphrase. The manifest is signed with
+Ed25519 over canonical JSON. The signature key id is checked against the
+independently configured trusted public key; the public key in a manifest is
+never trusted by itself.
 
-### Required Fields
+The deploy command creates and verifies this manifest after artifact checks
+and before invoking Stellar. A missing signing key, missing trusted key,
+signature failure, source/network mismatch, ABI-version mismatch, unsafe or
+missing artifact path, or artifact digest mismatch aborts deployment. The
+manifest is immutable for a given network and source revision; rerunning the
+same operation reuses an existing manifest only after verifying it again.
+After a successful deployment, `<network>.json` records the release-manifest
+path, digest, and source revision so deployment metadata remains linked to the
+signed candidate.
 
-Every `deployments/<network>.json` manifest must include:
+Configure `XCONFESS_RELEASE_SIGNING_KEY` (Ed25519 private-key PEM) only in the
+release operator's secret store, and configure its matching
+`XCONFESS_RELEASE_TRUSTED_PUBLIC_KEY` (public-key PEM) in the verifier
+environment. Never commit either key. Rotate by distributing the new trusted
+public key to all verifiers before signing with the corresponding private
+key. Standard `testnet`, `futurenet`, `mainnet`, `public`, and `pubnet` aliases
+have network metadata defaults. Custom aliases additionally require
+`XCONFESS_NETWORK_ID`, `XCONFESS_RELEASE_ENVIRONMENT`, and
+`XCONFESS_NETWORK_PASSPHRASE`.
 
-- `network`: the Stellar network id (`testnet`, `mainnet`, or `futurenet`).
-- `environment`: the deployment environment (`development`, `staging`, or
-  `production`).
-- `contracts`: a map of contract name to `{ contract_id, wasm_sha256,
-  abi_sha256 }`. `wasm_sha256` and `abi_sha256` are lowercase hex SHA-256
-  digests of the deployed WASM and ABI artifacts.
-- `signer`: `{ public_key, signature, signed_at }` describing the deployer that
-  produced the manifest. `signature` is the deployer's signature over the
-  canonical manifest payload (all fields except `signer.signature`).
-
-### Verification
-
-Run the verification routine before consuming a manifest:
+To verify a generated release again:
 
 ```bash
-npm run contracts:verify-manifest -- --manifest deployments/testnet.json
+node scripts/contract-release-manifest.js verify \
+  --network testnet \
+  --manifest deployments/contract-release-manifest-testnet-<full-revision>.json
 ```
 
-Verification fails when:
-
-- a referenced artifact's SHA-256 does not match the manifest checksum
-  (tampered artifact)
-- the manifest `network`/`environment` is incompatible with the consumer's
-  expected network/environment
-- `signer` provenance is missing, malformed, or the signature does not verify
-  against the canonical manifest payload
-
-Consumers (backend services, frontend builds, CI preflight) must reject any
-manifest that fails verification rather than falling back to unverified
-contract IDs.
+Verification checks the trusted signature and re-hashes the local WASM and
+ABI artifacts. Consumers at the release boundary must reject failed
+verification; they must not fall back to unsigned contract IDs.
 
 ## Rollback Evidence Archive
 

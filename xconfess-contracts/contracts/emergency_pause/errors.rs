@@ -8,4 +8,5 @@ pub enum PauseError {
     NotPaused = 2,
     Unauthorized = 3,
     ContractPaused = 4,
+    ReasonTooLong = 5,
 }

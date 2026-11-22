@@ -70,15 +70,36 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ needs.prepare.outputs.environment }}
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Gate deployment compatibility
+        env:
+          BACKEND_ENV_FILE: ${{ secrets.BACKEND_ENV_FILE }}
+          BACKEND_API_URL: ${{ secrets.BACKEND_API_URL }}
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+        run: node scripts/release-compatibility.js --deployment --output release-compatibility-report.json
+
+      - name: Retain deployment compatibility report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-compatibility-${{ github.run_id }}
+          path: release-compatibility-report.json
+          if-no-files-found: warn
+          retention-days: 90
+
       - name: Check required deployment secrets
         run: |
           missing=()
           [[ -z "${{ secrets.DEPLOY_HOST }}" ]] && missing+=("DEPLOY_HOST")
           [[ -z "${{ secrets.DEPLOY_USER }}" ]] && missing+=("DEPLOY_USER")
           [[ -z "${{ secrets.DEPLOY_SSH_KEY }}" ]] && missing+=("DEPLOY_SSH_KEY")
-          [[ -z "${{ secrets.BACKEND_ENV_FILE }}" ]] && missing+=("BACKEND_ENV_FILE")
-          [[ -z "${{ secrets.BACKEND_API_URL }}" ]] && missing+=("BACKEND_API_URL")
-          [[ -z "${{ secrets.NEXT_PUBLIC_API_URL }}" ]] && missing+=("NEXT_PUBLIC_API_URL")
 
           if [[ ${#missing[@]} -gt 0 ]]; then
             echo "::error::Missing required secrets for '${{ needs.prepare.outputs.environment }}': ${missing[*]}"
@@ -86,7 +107,7 @@ jobs:
             exit 1
           fi
 
-          echo "All required secrets are present. Proceeding with '${{ needs.prepare.outputs.environment }}' deployment."
+          echo "All required deployment access secrets are present. Proceeding with '${{ needs.prepare.outputs.environment }}' deployment."
 
   build:
     name: Build artifacts

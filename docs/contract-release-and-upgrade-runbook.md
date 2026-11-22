@@ -13,6 +13,7 @@ This is the canonical runbook for planning, building, deploying, and upgrading x
 - [Pre-Release Checklist](#pre-release-checklist)
 - [Toolchain Verification](#toolchain-verification)
 - [Build Phase](#build-phase)
+- [Signed Release Manifest](#signed-release-manifest)
 - [Artifact Checksum Review](#artifact-checksum-review)
 - [Deployment Phase](#deployment-phase)
 - [Post-Deployment Verification](#post-deployment-verification)
@@ -60,6 +61,34 @@ or inconsistent evidence and rerun before deployment.
 
 This report is a release-boundary CLI artifact; it does not create an
 application API or alter backend/frontend behavior.
+
+---
+
+## Signed Release Manifest
+
+Before any contract deployment, `contracts-release.sh deploy` builds and
+verifies `deployments/contract-wasm-manifest.json`, creates a
+network-and-revision-specific signed release manifest, and verifies that
+signature and all referenced artifacts against the configured trusted public
+key. The deploy command will not call Stellar unless both keys are present
+and the manifest, ABI version, source revision, network metadata, WASM digest,
+and ABI digest all agree.
+
+Provision an Ed25519 PEM key pair outside the repository. Store the private
+key as `XCONFESS_RELEASE_SIGNING_KEY` in the release operator's secret store;
+make the corresponding public key available as
+`XCONFESS_RELEASE_TRUSTED_PUBLIC_KEY` to both the signer and every verifier.
+Do not pass keys as command-line arguments or commit them. For custom Stellar
+aliases, also set `XCONFESS_NETWORK_ID`, `XCONFESS_RELEASE_ENVIRONMENT`, and
+`XCONFESS_NETWORK_PASSPHRASE`. Standard aliases use the documented defaults
+in [`deployments/README.md`](../deployments/README.md).
+
+The signed file is immutable for its network and full source revision and is
+referenced by digest from the resulting `deployments/<network>.json`. A
+partial on-chain deployment does not produce a completed deployment record;
+operators must reconcile the network state before retrying. The retry
+revalidates/reuses the signed candidate and does not treat an invalid
+existing manifest as replaceable.
 
 ---
 

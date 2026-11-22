@@ -122,6 +122,19 @@ fn schema_drift_guard() {
             &["actor", "paused", "reason", "timestamp"][..],
         ),
         (
+            "pause",
+            "PauseAuditEvent",
+            "pause_audit",
+            &[
+                "event_version",
+                "paused",
+                "actor",
+                "reason",
+                "ledger_sequence",
+                "ledger_timestamp",
+            ][..],
+        ),
+        (
             "report",
             "ReportEvent",
             "report",

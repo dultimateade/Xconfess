@@ -307,6 +307,27 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Gate staging deployment compatibility
+        env:
+          BACKEND_ENV_FILE: ${{ secrets.BACKEND_ENV_FILE }}
+          BACKEND_API_URL: ${{ secrets.BACKEND_API_URL }}
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+        run: node scripts/release-compatibility.js --deployment --skip-drift-checks --output release-compatibility-report.json
+
+      - name: Retain staging deployment compatibility report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-compatibility-staging-${{ github.run_id }}
+          path: release-compatibility-report.json
+          if-no-files-found: warn
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
+
       - name: Setup SSH agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
@@ -446,6 +467,27 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Gate production deployment compatibility
+        env:
+          BACKEND_ENV_FILE: ${{ secrets.BACKEND_ENV_FILE }}
+          BACKEND_API_URL: ${{ secrets.BACKEND_API_URL }}
+          NEXT_PUBLIC_API_URL: ${{ secrets.NEXT_PUBLIC_API_URL }}
+        run: node scripts/release-compatibility.js --deployment --skip-drift-checks --output release-compatibility-report.json
+
+      - name: Retain production deployment compatibility report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-compatibility-production-${{ github.run_id }}
+          path: release-compatibility-report.json
+          if-no-files-found: warn
+          retention-days: ${{ env.ARTIFACT_RETENTION_DAYS }}
 
       - name: Setup SSH agent
         uses: webfactory/ssh-agent@v0.9.0

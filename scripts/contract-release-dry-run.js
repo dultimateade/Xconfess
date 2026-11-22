@@ -6,6 +6,7 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const { verifyManifest } = require('./contract-release-manifest');
 
 const ROOT = path.resolve(__dirname, '..');
 const ABI_MANIFEST = 'deployments/contract-abi-manifest.json';
@@ -149,6 +150,13 @@ function createReport({ network, abiManifest, wasmManifest, migrationManifest, d
     const exists = Boolean(artifactPath && fs.existsSync(artifactPath) && fs.statSync(artifactPath).isFile());
     const actualDigest = exists ? sha256(artifactPath) : null;
     const digestMatches = exists && actualDigest === metadata.sha256;
+    const abiPath = safeArtifactPath(root, `contracts/${name}/abi.json`);
+    const abiExists = Boolean(abiPath && fs.existsSync(abiPath) && fs.statSync(abiPath).isFile());
+    const actualAbiDigest = abiExists ? sha256(abiPath) : null;
+    const abiVersion = abiExists ? readJson(root, `xconfess-contracts/contracts/${name}/abi.json`).version : null;
+    const abiMatches = abiExists && actualAbiDigest === metadata.abi_sha256
+      && abiVersion === abiManifest.contracts[name].version
+      && abiVersion === metadata.version;
     return {
       contract: name,
       version: metadata.version,
@@ -160,17 +168,46 @@ function createReport({ network, abiManifest, wasmManifest, migrationManifest, d
       },
       abi: {
         sha256: metadata.abi_sha256,
+        verification: !abiPath ? 'invalid_path' : !abiExists ? 'not_available' : abiMatches ? 'verified' : 'mismatch',
+        ...(actualAbiDigest ? { actualSha256: actualAbiDigest } : {}),
         functions: [...abiManifest.contracts[name].functions].sort(),
       },
     };
   });
-  const artifactStatus = artifactResults.every((artifact) => artifact.wasm.verification === 'verified')
+  const artifactStatus = artifactResults.every((artifact) =>
+    artifact.wasm.verification === 'verified' && artifact.abi.verification === 'verified')
     ? 'passed'
     : artifactResults.some((artifact) => artifact.wasm.verification === 'mismatch'
-      || artifact.wasm.verification === 'invalid_path') ? 'blocked' : 'review_required';
+      || artifact.wasm.verification === 'invalid_path'
+      || artifact.abi.verification === 'mismatch'
+      || artifact.abi.verification === 'invalid_path') ? 'blocked' : 'review_required';
   check('candidate artifact digests', artifactStatus,
-    artifactStatus === 'passed' ? 'all candidate WASM digests verified against local artifacts'
-      : 'digests are recorded, but one or more local artifacts are unavailable or invalid; build/reconcile artifacts before deployment.');
+    artifactStatus === 'passed' ? 'all candidate WASM and ABI digests and versions verified against local artifacts'
+      : 'one or more local WASM or ABI artifacts are unavailable or mismatch their release metadata; build/reconcile artifacts before deployment.');
+
+  const signedManifestPath = path.join(root, 'deployments', `contract-release-manifest-${network}-${commit}.json`);
+  if (fs.existsSync(signedManifestPath)) {
+    try {
+      const signedManifest = JSON.parse(fs.readFileSync(signedManifestPath, 'utf8'));
+      verifyManifest({
+        root,
+        manifest: signedManifest,
+        network,
+        sourceRevision: commit,
+        trustedPublicKey: process.env.XCONFESS_RELEASE_TRUSTED_PUBLIC_KEY,
+        networkOverrides: {
+          id: process.env.XCONFESS_NETWORK_ID,
+          environment: process.env.XCONFESS_RELEASE_ENVIRONMENT,
+          passphrase: process.env.XCONFESS_NETWORK_PASSPHRASE,
+        },
+      });
+      check('signed release manifest', 'passed', 'signature, network, source revision, ABI versions, and artifact digests verified');
+    } catch (error) {
+      check('signed release manifest', 'blocked', error.message);
+    }
+  } else {
+    check('signed release manifest', 'not_available', 'no signed release manifest exists for this candidate and network yet');
+  }
 
   const abiContracts = names.map((name) => {
     const prior = deployedContracts?.[name];

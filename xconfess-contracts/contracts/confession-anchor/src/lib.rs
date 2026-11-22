@@ -14,6 +14,7 @@ mod access_control;
 
 #[path = "../../emergency_pause/mod.rs"]
 mod emergency_pause;
+pub use emergency_pause::PauseAuditRecord;
 
 pub const CONTRACT_SEMVER_MAJOR: u32 = 1;
 pub const CONTRACT_SEMVER_MINOR: u32 = 0;
@@ -134,6 +135,7 @@ pub enum Error {
     AlreadyOperator = 13,
     NotOperator = 14,
     IncompatibleUpgrade = 15,
+    PauseReasonTooLong = 16,
 }
 
 impl From<access_control::AccessError> for Error {
@@ -160,6 +162,7 @@ impl From<emergency_pause::errors::PauseError> for Error {
             emergency_pause::errors::PauseError::NotPaused => Self::NotPaused,
             emergency_pause::errors::PauseError::Unauthorized => Self::Unauthorized,
             emergency_pause::errors::PauseError::ContractPaused => Self::ContractPaused,
+            emergency_pause::errors::PauseError::ReasonTooLong => Self::PauseReasonTooLong,
         }
     }
 }
@@ -519,9 +522,7 @@ impl ConfessionAnchor {
             return Err(Error::AlreadyPaused);
         }
 
-        emergency_pause::set_paused_internal(&env, true);
-        emergency_pause::events::emit_paused(&env, &caller, reason);
-        Ok(())
+        emergency_pause::set_paused_internal(&env, true, &caller, reason).map_err(Error::from)
     }
 
     /// Unpause the contract (owner/admin).
@@ -532,14 +533,19 @@ impl ConfessionAnchor {
             return Err(Error::NotPaused);
         }
 
-        emergency_pause::set_paused_internal(&env, false);
-        emergency_pause::events::emit_unpaused(&env, &caller, reason);
-        Ok(())
+        emergency_pause::set_paused_internal(&env, false, &caller, reason).map_err(Error::from)
     }
 
     /// Check if the contract is paused.
     pub fn is_paused(env: Env) -> bool {
         emergency_pause::is_paused(&env)
+    }
+
+    /// Return the most recent pause and resume audit records.
+    /// The complete transition history is available from the `pause_audit`
+    /// contract event stream.
+    pub fn get_pause_audit(env: Env) -> soroban_sdk::Vec<PauseAuditRecord> {
+        emergency_pause::get_pause_audit(&env)
     }
 }
 
@@ -1333,8 +1339,51 @@ mod test {
     }
 
     #[test]
-    #[should_panic(expected = "pause reason too long")]
-    fn pause_reason_limit_plus_one_rejected() {
+    fn pause_emits_legacy_and_versioned_audit_events_with_ledger_context() {
+        let (env, client) = new_client();
+        let owner = Address::generate(&env);
+        client.initialize(&owner);
+        let reason = SorobanString::from_str(&env, "incident response");
+
+        client.pause(&owner, &reason);
+
+        let events = env.events().all();
+        assert_eq!(events.len(), 2);
+        let (_, _, legacy_data) = events.first().unwrap();
+        let legacy: SorobanString = legacy_data.into_val(&env);
+        assert_eq!(legacy, reason);
+        let (_, _, audit_data) = events.last().unwrap();
+        let audit: (u32, bool, Address, SorobanString, u32, u64) = audit_data.into_val(&env);
+        assert_eq!(audit.0, emergency_pause::events::PAUSE_AUDIT_EVENT_VERSION);
+        assert!(audit.1);
+        assert_eq!(audit.2, owner);
+        assert_eq!(audit.3, reason);
+        assert_eq!(audit.4, env.ledger().sequence());
+        assert_eq!(audit.5, env.ledger().timestamp());
+
+        let resume_reason = SorobanString::from_str(&env, "recovery verified");
+        client.unpause(&owner, &resume_reason);
+        let events = env.events().all();
+        assert_eq!(events.len(), 2);
+        let (_, _, legacy_resume_data) = events.first().unwrap();
+        let legacy_resume: SorobanString = legacy_resume_data.into_val(&env);
+        assert_eq!(legacy_resume, resume_reason);
+        let (_, _, resume_audit_data) = events.last().unwrap();
+        let resume_audit: (u32, bool, Address, SorobanString, u32, u64) =
+            resume_audit_data.into_val(&env);
+        assert_eq!(
+            resume_audit.0,
+            emergency_pause::events::PAUSE_AUDIT_EVENT_VERSION
+        );
+        assert!(!resume_audit.1);
+        assert_eq!(resume_audit.2, owner);
+        assert_eq!(resume_audit.3, resume_reason);
+        assert_eq!(resume_audit.4, env.ledger().sequence());
+        assert_eq!(resume_audit.5, env.ledger().timestamp());
+    }
+
+    #[test]
+    fn pause_reason_limit_plus_one_returns_validation_error() {
         let (env, client) = new_client();
         let owner = Address::generate(&env);
         let reason = SorobanString::from_str(
@@ -1344,6 +1393,12 @@ mod test {
 
         client.initialize(&owner);
 
-        client.pause(&owner, &reason);
+        assert_eq!(
+            client.try_pause(&owner, &reason),
+            Err(Ok(Error::PauseReasonTooLong))
+        );
+        assert!(!client.is_paused());
+        assert!(client.get_pause_audit().is_empty());
+        assert!(env.events().all().is_empty());
     }
 }

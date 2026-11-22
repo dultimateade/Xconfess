@@ -24,12 +24,15 @@ for crate in "${crates[@]}"; do
   mkdir -p "$contracts_dir/contracts/$crate"
   printf '[package]\nname = "%s"\nversion = "1.2.3"\n' "$crate" \
     > "$contracts_dir/contracts/$crate/Cargo.toml"
+  printf '{\n  "version": "1.2.3",\n  "functions": []\n}\n' \
+    > "$contracts_dir/contracts/$crate/abi.json"
   printf 'fixture wasm bytes for %s\n' "$crate" \
     > "$target_dir/${crate//-/_}.wasm"
 done
 
 export XCONFESS_CONTRACTS_DIR="$contracts_dir"
 export XCONFESS_TARGET_DIR="$target_dir"
+export XCONFESS_TARGET_TRIPLE="wasm32-unknown-unknown"
 
 source "$REPO_ROOT/scripts/contracts-release.sh"
 

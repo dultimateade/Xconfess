@@ -13,6 +13,8 @@ The `emergency_pause` module is located at `xconfess-contracts/contracts/emergen
 - **Event Emission**: `emit_paused()`, `emit_unpaused()`
 - **Error Handling**: Standard `PauseError` enum with stable error codes
 - **Storage**: Centralized `DataKey::Paused` boolean flag
+- **Audit**: Latest pause and resume records are queryable; every successful
+  transition emits a versioned `pause_audit` event with actor and ledger context
 
 ## Supported Contracts
 
@@ -67,8 +69,13 @@ pub enum PauseError {
     NotPaused = 2,            // Attempt to unpause non-paused contract
     Unauthorized = 3,         // Caller lacks admin authorization
     ContractPaused = 4,       // Operation blocked due to pause
+    ReasonTooLong = 5,        // Pause/resume reason exceeds 128 bytes
 }
 ```
+
+`confession-anchor` exposes `ReasonTooLong` as its stable contract error code
+16 (`PauseReasonTooLong`); governance execution propagates the shared
+`PauseError::ReasonTooLong` code 5.
 
 When a blocked operation is attempted on a paused contract:
 - Error code `4` is returned/panicked
@@ -164,6 +171,33 @@ All pause behavior is tested in `confession-registry/src/confession_reg_auth.rs`
 - `f1_reads_are_not_blocked_by_pause` — Verifies read operations remain available
 
 **Key Property**: When paused, read operations return fresh data while write operations fail with `PauseError::ContractPaused`.
+
+### Pause and recovery audit
+
+The shared pause module records the latest successful pause and resume
+separately. Each record contains the transition, actor, free-text reason, ledger
+sequence, and ledger timestamp. `get_pause_audit()` exposes those latest records on-chain;
+the versioned `pause_audit` event is the append-only source for the complete
+history. Legacy `paused` and `unpaused` events retain their existing topic and
+payload.
+
+Reasons are limited to 128 bytes. They are public on-chain; callers must not
+include secrets, personal data, or other confidential information. Unauthorized
+calls, duplicate pause/resume attempts, and oversized reasons fail without
+changing state or emitting audit events. Legacy governance actions continue to
+work and record a fixed reason; new `PauseWithReason` and `UnpauseWithReason`
+governance actions accept explicit reasons.
+
+The audit storage keys are additive and optional. Existing deployments need no
+backfill or migration; the getter returns `None` for each record not yet
+created, while the existing `Paused` key and legacy event payloads are
+unchanged.
+
+Rolling back to pre-audit WASM preserves the pause flag and legacy pause
+behavior, but that code ignores the new audit keys and emits no `pause_audit`
+events. Transitions made during rollback are therefore not included in the
+stored latest records; the legacy events remain the only record for that
+period, and no audit backfill is performed.
 
 ## Security Considerations
 

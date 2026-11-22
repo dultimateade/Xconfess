@@ -118,6 +118,22 @@ pub const PUBLIC_EVENT_SCHEMA_FIXTURES: &[EventSchemaFixture] = &[
     },
     EventSchemaFixture {
         fixture_version: EVENT_FIXTURE_VERSION_V1,
+        event_name: "PauseAuditEvent",
+        category: "pause",
+        topic: "pause_audit",
+        data_format: "vec",
+        event_version: EVENT_VERSION_V1,
+        field_order: &[
+            "event_version",
+            "paused",
+            "actor",
+            "reason",
+            "ledger_sequence",
+            "ledger_timestamp",
+        ],
+    },
+    EventSchemaFixture {
+        fixture_version: EVENT_FIXTURE_VERSION_V1,
         event_name: "ReportEvent",
         category: "report",
         topic: "report",
